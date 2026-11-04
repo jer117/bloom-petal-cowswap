@@ -1,0 +1,22 @@
+schema = "bloom.petal.build.v1"
+name = "cowswap"
+routes = "route/files"
+output = "petal/cowswap"
+
+[route_crate]
+package = "bloom-cowswap-route"
+path = "route"
+alias = "cowswap_route"
+
+# Pinned to the same revision of bloom-directory/petal that the petal CLI
+# used to scaffold this package (contract bloom:route@0.1.0).
+[sdk]
+package = "bloom-petal-sdk"
+git = "https://github.com/bloom-directory/petal"
+rev = "aaf171f6ed4542ee7f5ba3f4665c9e6f4abf4288"
+
+[dependencies]
+alloy = { version = "2", default-features = false, features = ["dyn-abi", "k256", "serde", "sol-types", "std"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,42 @@
+schema = "bloom.petal.package.v1"
+name = "cowswap"
+
+[consent]
+summary = "Expose CoW Protocol orderbook reads (quotes, account orders, order status), ERC20 allowance checks against the Vault Relayer, and a reviewable order draft/sign/post flow as a Petal."
+
+[caps]
+allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]
+
+# Unauthenticated reads (GET) are allowed across the four supported API
+# environments. Writes (POST) are pinned to exactly the two endpoints the
+# order flow uses: fee/price quoting and order creation. No x402 paid quotes,
+# no app_data registration, no DELETE (order cancellation is out of scope).
+[[net.allow]]
+host = "api.cow.fi"
+methods = ["get"]
+paths = [
+  "/mainnet/api/v1/*",
+  "/xdai/api/v1/*",
+  "/arbitrum_one/api/v1/*",
+  "/base/api/v1/*",
+]
+
+[[net.allow]]
+host = "api.cow.fi"
+methods = ["post"]
+paths = [
+  "/mainnet/api/v1/quote",
+  "/mainnet/api/v1/orders",
+  "/xdai/api/v1/quote",
+  "/xdai/api/v1/orders",
+  "/arbitrum_one/api/v1/quote",
+  "/arbitrum_one/api/v1/orders",
+  "/base/api/v1/quote",
+  "/base/api/v1/orders",
+]
+
+[sign]
+allowed_intents = ["cowswap.order.v1"]
+
+[store]
+namespaces = ["state"]

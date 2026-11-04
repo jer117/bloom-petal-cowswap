@@ -1,0 +1,5 @@
+/target/
+/route/target/
+/artifacts/
+/dist/
+/petal/cowswap/**/*.wasm

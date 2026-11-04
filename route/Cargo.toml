@@ -1,0 +1,19 @@
+[package]
+name = "bloom-cowswap-route"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+alloy = { version = "2", default-features = false, features = ["dyn-abi", "k256", "serde", "sol-types", "std"] }
+hex = "0.4"
+petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "aaf171f6ed4542ee7f5ba3f4665c9e6f4abf4288" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+alloy = { version = "2", default-features = false, features = ["signer-local"] }
