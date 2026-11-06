@@ -7,7 +7,7 @@ summary = "Expose CoW Protocol orderbook reads (quotes, account orders, order st
 [caps]
 allowed = ["bloom:http", "bloom:store", "bloom:sign", "bloom:chain", "bloom:vfs.read"]
 
-# Unauthenticated reads (GET) are allowed across the four supported API
+# Unauthenticated reads (GET) are allowed across the five supported API
 # environments. Writes (POST) are pinned to exactly the two endpoints the
 # order flow uses: fee/price quoting and order creation. No x402 paid quotes,
 # no app_data registration, no DELETE (order cancellation is out of scope).
@@ -19,6 +19,7 @@ paths = [
   "/xdai/api/v1/*",
   "/arbitrum_one/api/v1/*",
   "/base/api/v1/*",
+  "/sepolia/api/v1/*",
 ]
 
 [[net.allow]]
@@ -33,6 +34,8 @@ paths = [
   "/arbitrum_one/api/v1/orders",
   "/base/api/v1/quote",
   "/base/api/v1/orders",
+  "/sepolia/api/v1/quote",
+  "/sepolia/api/v1/orders",
 ]
 
 [sign]

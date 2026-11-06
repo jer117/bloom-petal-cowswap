@@ -21,8 +21,10 @@ after owner approval under the intent `cowswap.order.v1`.
 | `…/drafts/<id>/confirm` | signing write (`cowswap.order.v1`) | Sign the EIP-712 order through Bloom and POST it; idempotent |
 | `…/drafts/<id>/status.json` | read | Local draft state merged with live orderbook status |
 
-`[network]` ∈ `mainnet`, `xdai` (Gnosis), `arbitrum_one`, `base` — the exact
-API environment segments under `https://api.cow.fi`.
+`[network]` ∈ `mainnet`, `xdai` (Gnosis), `arbitrum_one`, `base`, `sepolia` — the
+exact API environment segments under `https://api.cow.fi`. Sepolia is the
+11155111 testnet deployment; the GPv2 contracts live at the same addresses as
+mainnet there (verified via the settlement's live `domainSeparator()`).
 
 ## Building
 

@@ -28,6 +28,12 @@ petal::route_file!(spec: petal::static_read_spec(), read: |_ctx: &petal::Ctx| {
                 "chain_id": 8453,
                 "bloom_chain": "base",
                 "api": "https://api.cow.fi/base/api/v1/",
+            },
+            {
+                "segment": "sepolia",
+                "chain_id": 11155111,
+                "bloom_chain": "sepolia",
+                "api": "https://api.cow.fi/sepolia/api/v1/",
             }
         ],
         "contracts": {

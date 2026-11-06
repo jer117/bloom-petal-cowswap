@@ -327,8 +327,10 @@ fn post_signed_order(
     }
 }
 
-/// The `OrderCreation` body, per the orderbook OpenAPI schema.
-fn order_creation_body(
+/// The `OrderCreation` body, per the orderbook OpenAPI schema. Public so the
+/// Sepolia end-to-end example (`route/examples/sepolia_e2e.rs`) submits the
+/// byte-identical body this Petal's confirm route builds.
+pub fn order_creation_body(
     stored: &OrderDraft,
     gpv2: &Order,
     owner: Address,
@@ -358,7 +360,7 @@ fn order_creation_body(
 }
 
 /// The raw `r ‖ s ‖ v` bytes with v in {27, 28}, as the API expects.
-fn signature_as_rsv(signature: &Signature) -> [u8; 65] {
+pub fn signature_as_rsv(signature: &Signature) -> [u8; 65] {
     let bytes = signature.as_bytes();
     let mut rsv = [0u8; 65];
     rsv.copy_from_slice(&bytes[..65]);
@@ -430,6 +432,7 @@ mod tests {
             CowNetwork::Gnosis,
             CowNetwork::Arbitrum,
             CowNetwork::Base,
+            CowNetwork::Sepolia,
         ] {
             let effects = claim_effects(&draft_fixture("sell"), network);
             let debits = effects.debits();
@@ -447,7 +450,7 @@ mod tests {
         let draft = draft_fixture("sell");
         let gpv2 = draft.order.to_gpv2().unwrap();
         let owner: Address = draft.owner.parse().unwrap();
-        use alloy::signers::{Signer, local::PrivateKeySigner};
+        use alloy::signers::local::PrivateKeySigner;
         let signer: PrivateKeySigner =
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".parse().unwrap();
         let signature = tokio_block_sign(&signer, &gpv2);
@@ -489,7 +492,7 @@ mod tests {
         let draft = draft_fixture("sell");
         let gpv2 = draft.order.to_gpv2().unwrap();
         let digest = order::order_digest(&gpv2, CowNetwork::Mainnet);
-        use alloy::signers::{Signer, local::PrivateKeySigner};
+        use alloy::signers::local::PrivateKeySigner;
         let signer: PrivateKeySigner =
             "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80".parse().unwrap();
         let signature = tokio_block_sign(&signer, &gpv2);
@@ -521,7 +524,7 @@ mod tests {
         loop {
             match future.as_mut().poll(&mut cx) {
                 std::task::Poll::Ready(result) => {
-                    return result.expect("local signing cannot fail").into()
+                    return result.expect("local signing cannot fail")
                 }
                 std::task::Poll::Pending => std::thread::yield_now(),
             }

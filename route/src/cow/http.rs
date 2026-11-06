@@ -113,6 +113,10 @@ mod tests {
             "https://api.cow.fi/arbitrum_one/api/v1"
         );
         assert_eq!(api_root(CowNetwork::Base), "https://api.cow.fi/base/api/v1");
+        assert_eq!(
+            api_root(CowNetwork::Sepolia),
+            "https://api.cow.fi/sepolia/api/v1"
+        );
     }
 
     #[test]

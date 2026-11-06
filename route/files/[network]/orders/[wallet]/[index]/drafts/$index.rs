@@ -9,7 +9,7 @@ petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_lis
         None => {
             return Err(petal::error(
                 -3,
-                "unknown network; expected mainnet, xdai, arbitrum_one or base",
+                "unknown network; expected mainnet, xdai, arbitrum_one, base or sepolia",
             ))
         }
     };

@@ -15,7 +15,7 @@ use crate::cow::CowNetwork;
 /// How long quoted orders stay valid. Relative validity (`validFor`) is
 /// requested; the API returns the absolute `validTo`, which the draft pins
 /// and the signed order reuses.
-pub const QUOTE_VALID_FOR_SECONDS: u64 = 300;
+pub const QUOTE_VALID_FOR_SECONDS: u64 = 1800;
 
 /// Default slippage bound applied when a draft request does not set one:
 /// 50 bps (0.5%).

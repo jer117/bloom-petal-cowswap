@@ -19,7 +19,7 @@ petal::route_file!(
         };
         let network = match crate::cow::CowNetwork::from_segment(network) {
             Some(network) => network,
-            None => return petal::error(-3, "unknown network; expected mainnet, xdai, arbitrum_one or base"),
+            None => return petal::error(-3, "unknown network; expected mainnet, xdai, arbitrum_one, base or sepolia"),
         };
         let account = match petal::wallet_account(ctx) {
             Ok(account) => account,

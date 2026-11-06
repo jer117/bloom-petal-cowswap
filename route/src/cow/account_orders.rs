@@ -83,7 +83,6 @@ mod tests {
         assert_eq!(projected["status"], "presignaturePending");
         assert_eq!(projected["kind"], "sell");
         assert_eq!(projected["validTo"], 1_893_456_000u64);
-        let text = projected.to_string();
         assert!(projected.get("signature").is_none(), "signature must be dropped");
         assert!(projected.get("fullAppData").is_none(), "fullAppData must be dropped");
         assert!(projected.get("interactions").is_none(), "interactions must be dropped");

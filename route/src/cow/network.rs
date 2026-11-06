@@ -26,6 +26,7 @@ pub enum CowNetwork {
     Gnosis,
     Arbitrum,
     Base,
+    Sepolia,
 }
 
 impl CowNetwork {
@@ -38,12 +39,13 @@ impl CowNetwork {
             "xdai" => Some(Self::Gnosis),
             "arbitrum_one" => Some(Self::Arbitrum),
             "base" => Some(Self::Base),
+            "sepolia" => Some(Self::Sepolia),
             _ => None,
         }
     }
 
     /// The `[network]` route segments, in listing order.
-    pub const SEGMENTS: [&'static str; 4] = ["mainnet", "xdai", "arbitrum_one", "base"];
+    pub const SEGMENTS: [&'static str; 5] = ["mainnet", "xdai", "arbitrum_one", "base", "sepolia"];
 
     /// The API environment path segment under `api.cow.fi`.
     pub fn api_env(self) -> &'static str {
@@ -52,6 +54,7 @@ impl CowNetwork {
             Self::Gnosis => "xdai",
             Self::Arbitrum => "arbitrum_one",
             Self::Base => "base",
+            Self::Sepolia => "sepolia",
         }
     }
 
@@ -62,6 +65,7 @@ impl CowNetwork {
             Self::Gnosis => 100,
             Self::Arbitrum => 42161,
             Self::Base => 8453,
+            Self::Sepolia => 11155111,
         }
     }
 
@@ -72,6 +76,7 @@ impl CowNetwork {
             Self::Gnosis => "gnosis",
             Self::Arbitrum => "arbitrum",
             Self::Base => "base",
+            Self::Sepolia => "sepolia",
         }
     }
 }
@@ -96,7 +101,7 @@ mod tests {
         for bad in [
             "",
             "Mainnet",
-            "sepolia",
+            "Sepolia",
             "xdai/",
             "gnosis-chain",
             "arbitrum-one",

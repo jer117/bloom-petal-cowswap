@@ -17,3 +17,5 @@ serde_json = "1"
 
 [dev-dependencies]
 alloy = { version = "2", default-features = false, features = ["signer-local"] }
+alloy-consensus = { version = "2", default-features = false }
+alloy-eips = { version = "2", default-features = false }

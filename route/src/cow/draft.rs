@@ -447,7 +447,7 @@ mod tests {
         );
         assert_eq!(view.fee_amount, "687752");
         assert_eq!(view.valid_to, 1_793_804_915);
-        assert_eq!(view.partially_fillable, false);
+        assert!(!view.partially_fillable);
         assert_eq!(view.sell_token_balance, "erc20");
         assert_eq!(view.receiver, "0x0000000000000000000000000000000000000000");
         assert_eq!(view.app_data_document, app_data::app_data_document());

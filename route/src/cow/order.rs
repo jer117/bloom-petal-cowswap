@@ -125,6 +125,7 @@ mod tests {
             CowNetwork::Gnosis,
             CowNetwork::Arbitrum,
             CowNetwork::Base,
+            CowNetwork::Sepolia,
         ] {
             let preimage = signing_preimage(&order, network);
             assert_eq!(order_digest(&order, network), keccak256(&preimage));
@@ -196,6 +197,15 @@ mod tests {
         assert_eq!(
             order_digest(&order, CowNetwork::Base).to_string(),
             "0x3dd746abcffccc59486df3a9e07d1fe7a6af1ea993fad5a18f315f9d02252b1d"
+        );
+        // Sepolia (chain 11155111): the domain separator this digest embeds,
+        // 0xdaee378bd0eb30ddf479272accf91761e697bc00e067a268f95f1d2732ed230b,
+        // was verified against the live GPv2Settlement.domainSeparator()
+        // eth_call on Sepolia (2026-11-04), where GPv2Settlement and
+        // GPv2VaultRelayer deploy at the same addresses as mainnet.
+        assert_eq!(
+            order_digest(&order, CowNetwork::Sepolia).to_string(),
+            "0x141742acbc5552b381ca1fb85c77e0417d620c5325b12ace97453e9c0108b4fa"
         );
     }
 

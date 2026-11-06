@@ -8,9 +8,9 @@ sign under a declared intent.
 ## Route tree
 
 ```
-$index.rs                                  → status.json + the four networks
+$index.rs                                  → status.json + the five networks
 status.json.rs                             → identity, contracts, appData
-[network]/                                 → mainnet | xdai | arbitrum_one | base
+[network]/                                 → mainnet | xdai | arbitrum_one | base | sepolia
   $index.rs                                → quote, allowance, orders
   quote/
     $index.rs                              → sell, buy
@@ -52,7 +52,7 @@ a path segment.
   `.caps(&[...])` overrides where the default write/chain specs would
   over-grant (`new`: http+store+vfs.read; `confirm`: http+store+sign+vfs.read;
   allowance: chain+vfs.read).
-- Network egress: one `[[net.allow]]` for GET across the four environments'
+- Network egress: one `[[net.allow]]` for GET across the five environments'
   `/api/v1/*` trees, and one for POST pinned to exactly `/quote` and
   `/orders` in each environment. No other host, method, or path.
 - Signing: `[sign].allowed_intents = ["cowswap.order.v1"]` only.
@@ -118,6 +118,14 @@ The `appDataHash` field is sent alongside for debugging, per the OpenAPI.
      from `cowprotocol/contracts` matches what alloy derives from the struct.
   The keccak source itself is validated against the docs' published vectors
   (`keccak256("cow")`, `keccak256("{}")`).
+- **Sepolia (chain 11155111)**: added 2026-11-04. GPv2Settlement and
+  GPv2VaultRelayer deploy at the same addresses as mainnet; the live
+  `GPv2Settlement.domainSeparator()` eth_call on Sepolia
+  (`0xdaee378bd0eb30ddf479272accf91761e697bc00e067a268f95f1d2732ed230b`,
+  via ethereum-sepolia-rpc.publicnode.com) equals the domain separator this
+  Petal derives for `CowNetwork::Sepolia`, and a fourth chain-bound digest
+  vector is pinned in `cow::order` tests. The end-to-end exercise lives in
+  `route/examples/sepolia_e2e.rs` (dev-only; never part of the wasm Petal).
 - **Signature path**: an end-to-end test builds the order, hashes it, signs
   the digest with a known local key (anvil account 0), and asserts the
   signature recovers the expected address and round-trips through the
