@@ -38,6 +38,9 @@ petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_lis
             ids.dedup();
             Ok(petal::dirs(ids))
         }
-        Err(e) => Err(petal::error(-4, format!("list drafts: {}", e.message()))),
+        Err(e) => Err(petal::error(
+            -4,
+            format!("list drafts: {}", crate::cow::host_error_text(&e)),
+        )),
     }
 });

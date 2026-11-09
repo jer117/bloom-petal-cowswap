@@ -30,9 +30,12 @@ fn request(method: &str, url: &str, body: Vec<u8>) -> Result<petal::sdk::HttpRes
     .map_err(sdk_error)
 }
 
-/// Map SDK/host failures to sanitized route errors.
+/// Map SDK/host failures to route errors, with Bloom's reason when it gave one.
 pub fn sdk_error(error: SdkError) -> DispatchResponse {
-    petal::error(-4, format!("orderbook request failed: {}", error.message()))
+    petal::error(
+        -4,
+        format!("orderbook request failed: {}", crate::cow::host_error_text(&error)),
+    )
 }
 
 /// Issue a GET and parse the JSON body. Non-2xx becomes a sanitized `-4`

@@ -4,6 +4,12 @@
 //! ambiguous post is reconciled by the locally computed order UID, and a
 //! pending owner approval is recorded so the exact same write can be retried
 //! after approval.
+//!
+//! The signing request carries the order's full EIP-712 typed data as a
+//! `bloom.message.review.v1` envelope ([`order::message_review`]). Bloom
+//! refuses an EIP-712 signature without one; with it, Broker rebuilds the
+//! preimage, checks it is the payload being signed, and shows the owner
+//! every `Order` field.
 
 use alloy::primitives::{Address, Signature, U256};
 use petal::sdk::{DispatchResponse, HostStatus, SignOutcome, SdkError};
@@ -21,43 +27,6 @@ const SUITE: petal::CryptoSuite = petal::CryptoSuite::Secp256k1Keccak256Recovera
 
 /// How much remaining validity an order needs before it is worth signing.
 const MIN_REMAINING_VALIDITY_SECONDS: u64 = 60;
-
-/// The prepared record that becomes the signing request's `action`. It is
-/// serialized deterministically from immutable draft fields, so a retried
-/// confirm presents the exact same action for the same claim.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PreparedOrder {
-    pub schema: String,
-    pub draft_id: String,
-    pub network: String,
-    pub chain_id: u64,
-    pub owner: String,
-    pub order: draft::SignedOrderView,
-    pub order_digest: String,
-    pub signing_preimage_hex: String,
-}
-
-fn prepared_from_draft(draft: &OrderDraft, network: CowNetwork) -> Result<PreparedOrder, DispatchResponse> {
-    let gpv2 = draft
-        .order
-        .to_gpv2()
-        .map_err(|e| petal::error(-4, format!("stored order is invalid: {e}")))?;
-    let preimage = order::signing_preimage(&gpv2, network);
-    let digest = order::order_digest(&gpv2, network);
-    if alloy::primitives::keccak256(&preimage) != digest {
-        return Err(petal::error(-4, "order preimage does not hash to its digest"));
-    }
-    Ok(PreparedOrder {
-        schema: "bloom.cowswap.prepared_order.v1".into(),
-        draft_id: draft.id.clone(),
-        network: draft.network.clone(),
-        chain_id: network.chain_id(),
-        owner: draft.owner.clone(),
-        order: draft.order.clone(),
-        order_digest: format!("{digest:#x}"),
-        signing_preimage_hex: hex::encode(&preimage),
-    })
-}
 
 /// Confirm a draft: sign and post. See the module docs for lifecycle.
 pub fn confirm_draft(
@@ -135,24 +104,15 @@ pub fn confirm_draft(
     // Freshness: do not sign an order about to lapse.
     let now_seconds = match petal::sdk::try_now_ms() {
         Ok(ms) => ms / 1000,
-        Err(e) => return petal::error(-4, format!("read clock: {}", e.message())),
+        Err(e) => return petal::error(-4, format!("read clock: {}", crate::cow::host_error_text(&e))),
     };
     if now_seconds + MIN_REMAINING_VALIDITY_SECONDS > u64::from(gpv2.validTo) {
         return petal::error(-3, "quote has expired; create a new draft for a fresh quote");
     }
-    let prepared = match prepared_from_draft(&stored, network) {
-        Ok(prepared) => prepared,
-        Err(resp) => return resp,
-    };
-    let preimage = hex::decode(&prepared.signing_preimage_hex)
-        .expect("prepared preimage is hex by construction");
+    let preimage = order::signing_preimage(&gpv2, network);
     let payload = petal::PayloadSignItem {
+        claimed_hash: alloy::primitives::keccak256(&preimage).0,
         preimage,
-        claimed_hash: prepared
-            .order_digest
-            .parse::<alloy::primitives::B256>()
-            .expect("prepared digest is a B256 by construction")
-            .0,
     };
     let effects = claim_effects(&stored, network);
     let claim = match petal::petal_use_claim(
@@ -170,9 +130,7 @@ pub fn confirm_draft(
         Ok(request) => request,
         Err(resp) => return resp,
     };
-    request.action = serde_json::to_vec(&prepared)
-        .map_err(|e| petal::error(-4, format!("encode prepared order: {e}")))
-        .ok();
+    request.action = Some(order::message_review(&gpv2, network));
     match petal::sdk::sign_payload(&request) {
         Ok(SignOutcome::Signature(raw)) => {
             let _ = draft::save_draft(&key, &stored);
@@ -190,14 +148,18 @@ pub fn confirm_draft(
             )
         }
         Err(SdkError::Host(HostStatus::Denied)) => {
+            // Bloom withholds why it denied a signature, so this keeps it
+            // out of the readable draft too.
             stored.last_error = Some("signing was denied".into());
             let _ = draft::save_draft(&key, &stored);
             petal::error(-2, "signing was denied")
         }
         Err(e) => {
-            stored.last_error = Some(e.message());
+            // Read the host's reason before saving the draft replaces it.
+            let message = format!("signing failed: {}", crate::cow::host_error_text(&e));
+            stored.last_error = Some(message.clone());
             let _ = draft::save_draft(&key, &stored);
-            petal::error(-4, format!("signing failed: {}", e.message()))
+            petal::error(-4, message)
         }
     }
 }
@@ -406,23 +368,28 @@ mod tests {
         }
     }
 
+    /// The envelope confirm sends for a stored draft rebuilds the exact
+    /// payload confirm asks Bloom to sign, on every network.
     #[test]
-    fn prepared_record_is_deterministic_and_hash_consistent() {
-        let draft = draft_fixture("sell");
-        let first = prepared_from_draft(&draft, CowNetwork::Mainnet).unwrap();
-        let second = prepared_from_draft(&draft, CowNetwork::Mainnet).unwrap();
-        assert_eq!(first, second);
-        let bytes = serde_json::to_vec(&first).unwrap();
-        assert_eq!(bytes, serde_json::to_vec(&second).unwrap());
-        // The digest field equals keccak256 of the preimage field.
-        let preimage = hex::decode(&first.signing_preimage_hex).unwrap();
-        assert_eq!(
-            first.order_digest,
-            format!("{:#x}", alloy::primitives::keccak256(&preimage))
-        );
-        // The chain id is part of the domain, so it changes the digest.
-        let other_chain = prepared_from_draft(&draft, CowNetwork::Gnosis).unwrap();
-        assert_ne!(first.order_digest, other_chain.order_digest);
+    fn stored_draft_review_rebuilds_the_signed_payload() {
+        let gpv2 = draft_fixture("sell").order.to_gpv2().unwrap();
+        for network in [
+            CowNetwork::Mainnet,
+            CowNetwork::Gnosis,
+            CowNetwork::Arbitrum,
+            CowNetwork::Base,
+            CowNetwork::Sepolia,
+        ] {
+            let review: serde_json::Value =
+                serde_json::from_slice(&order::message_review(&gpv2, network)).unwrap();
+            let typed: alloy_dyn_abi::TypedData =
+                serde_json::from_value(review["typed_data"].clone()).unwrap();
+            assert_eq!(
+                typed.eip712_signing_hash().unwrap(),
+                alloy::primitives::keccak256(order::signing_preimage(&gpv2, network))
+            );
+            assert_eq!(review["typed_data"]["message"]["sellAmount"], "9999312248");
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ crate-type = ["rlib"]
 [dependencies]
 alloy = { version = "2", default-features = false, features = ["dyn-abi", "k256", "serde", "sol-types", "std"] }
 hex = "0.4"
-petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "aaf171f6ed4542ee7f5ba3f4665c9e6f4abf4288" }
+petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "aaf171f6ed4542ee7f5ba3f4665c9e6f4abf4288", features = ["host-error-detail"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -19,3 +19,6 @@ serde_json = "1"
 alloy = { version = "2", default-features = false, features = ["signer-local"] }
 alloy-consensus = { version = "2", default-features = false }
 alloy-eips = { version = "2", default-features = false }
+# Tests rebuild the review envelope's typed data with the EIP-712 reader
+# Broker uses; the components themselves do not need it.
+alloy-dyn-abi = { version = "1", default-features = false, features = ["eip712", "std"] }

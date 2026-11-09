@@ -75,10 +75,17 @@ a path segment.
    sellAmount+feeAmount in the sell token, destination = GPv2VaultRelayer; no
    declared network fee — Bloom currently refuses those and CoW fees live
    inside the signed amounts), request the signature
-   (`sign_payload`, Exact selector, deterministic `action` bytes so retries
-   match the owner's approval), verify the signature recovers the draft
+   (`sign_payload`, Exact selector), verify the signature recovers the draft
    owner, then `POST /api/v1/orders`. The API's returned UID must be the
    locally computed one. Signature bytes are never persisted.
+
+   The request's `action` is a `bloom.message.review.v1` envelope carrying
+   the order's complete EIP-712 typed data (`cow::order::message_review`).
+   Bloom refuses an EIP-712 or EIP-191 signature without one. Broker rebuilds
+   the preimage from it, refuses the approval unless that preimage is the
+   exact payload being signed, and shows the owner every `Order` field. The
+   envelope is built only from the stored order and the network, so a retried
+   confirm sends the same bytes Machine bound to the owner's approval.
 3. **status** — local draft state, merged with `GET /api/v1/orders/{uid}`
    once posted.
 
@@ -151,7 +158,13 @@ The `appDataHash` field is sent alongside for debugging, per the OpenAPI.
   string so registration is unnecessary anyway.
 - **No x402/paid quotes, no API keys** — unauthenticated endpoints only, per
   the package constraints.
-- The broker-side review of `cowswap.order.v1` claims depends on Bloom's
-  operation-class catalog and installer provenance; this Petal declares
-  honest debits/destinations, but nothing here can prove how a given Broker
-  renders them.
+- Signing `cowswap.order.v1` needs installer provenance for this package's
+  hash. Broker reads every signed `Order` field from the review envelope, but
+  the claim's debit and Vault Relayer destination are this Petal's
+  declaration: Broker does not derive them from a CoW order, and nothing here
+  can prove how a given Broker renders them.
+- Host errors carry Bloom's reason: the SDK's `host-error-detail` feature is
+  on, and `cow::host_error_text` appends the reason the failing call
+  recorded. A signing failure's text is also kept in the draft's
+  `last_error`; a denial is kept only as `signing was denied`, because Bloom
+  withholds why it denied a signature.

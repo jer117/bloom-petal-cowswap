@@ -18,7 +18,7 @@ after owner approval under the intent `cowswap.order.v1`.
 | `[network]/orders/[wallet]/[index]/history.json` | read | The account's live orders (`GET /api/v1/account/{owner}/orders`) |
 | `[network]/orders/[wallet]/[index]/drafts/` | dir | The account's drafts, listed from its private store |
 | `…/drafts/<id>/order.json` | read | The reviewable intent: quote, slippage bound, the exact order to sign |
-| `…/drafts/<id>/confirm` | signing write (`cowswap.order.v1`) | Sign the EIP-712 order through Bloom and POST it; idempotent |
+| `…/drafts/<id>/confirm` | signing write (`cowswap.order.v1`) | Sign the EIP-712 order through Bloom, which shows the owner every order field, and POST it; idempotent |
 | `…/drafts/<id>/status.json` | read | Local draft state merged with live orderbook status |
 
 `[network]` ∈ `mainnet`, `xdai` (Gnosis), `arbitrum_one`, `base`, `sepolia` — the

@@ -70,6 +70,67 @@ pub fn order_digest(order: &Order, network: CowNetwork) -> B256 {
     keccak256(signing_preimage(order, network))
 }
 
+/// The `bloom.message.review.v1` envelope Bloom requires beside any EIP-712
+/// signature: the complete typed data for `order` on `network`. Broker
+/// rebuilds the signing preimage from it, refuses the approval unless that
+/// preimage is the exact payload being signed, and shows the owner every
+/// `Order` field. The bytes depend only on the order and the network, so a
+/// retried confirm presents the same envelope Machine bound to the approval.
+pub fn message_review(order: &Order, network: CowNetwork) -> Vec<u8> {
+    let field = |name: &str, ty: &str| serde_json::json!({ "name": name, "type": ty });
+    let domain = domain(network);
+    let envelope = serde_json::json!({
+        "schema": "bloom.message.review.v1",
+        "kind": "eip712",
+        "typed_data": {
+            "types": {
+                "EIP712Domain": [
+                    field("name", "string"),
+                    field("version", "string"),
+                    field("chainId", "uint256"),
+                    field("verifyingContract", "address"),
+                ],
+                "Order": [
+                    field("sellToken", "address"),
+                    field("buyToken", "address"),
+                    field("receiver", "address"),
+                    field("sellAmount", "uint256"),
+                    field("buyAmount", "uint256"),
+                    field("validTo", "uint32"),
+                    field("appData", "bytes32"),
+                    field("feeAmount", "uint256"),
+                    field("kind", "string"),
+                    field("partiallyFillable", "bool"),
+                    field("sellTokenBalance", "string"),
+                    field("buyTokenBalance", "string"),
+                ],
+            },
+            "primaryType": "Order",
+            "domain": {
+                "name": domain.name.as_deref(),
+                "version": domain.version.as_deref(),
+                "chainId": network.chain_id(),
+                "verifyingContract": domain.verifying_contract.map(|address| format!("{address:#x}")),
+            },
+            "message": {
+                "sellToken": format!("{:#x}", order.sellToken),
+                "buyToken": format!("{:#x}", order.buyToken),
+                "receiver": format!("{:#x}", order.receiver),
+                "sellAmount": order.sellAmount.to_string(),
+                "buyAmount": order.buyAmount.to_string(),
+                "validTo": order.validTo,
+                "appData": format!("{:#x}", order.appData),
+                "feeAmount": order.feeAmount.to_string(),
+                "kind": order.kind,
+                "partiallyFillable": order.partiallyFillable,
+                "sellTokenBalance": order.sellTokenBalance,
+                "buyTokenBalance": order.buyTokenBalance,
+            },
+        },
+    });
+    serde_json::to_vec(&envelope).expect("a JSON value always serializes")
+}
+
 /// The 56-byte order UID: `digest ‖ owner ‖ validTo`, as computed by
 /// `GPv2Settlement`'s `computedOrderUid`. Used to reconcile an ambiguous
 /// order POST without trusting a retried submission.
@@ -232,5 +293,137 @@ mod tests {
             format!("0x{}", "00".repeat(65))
         );
         assert!(signature_hex(&[0u8; 64]).is_err());
+    }
+
+    const ALL_NETWORKS: [CowNetwork; 5] = [
+        CowNetwork::Mainnet,
+        CowNetwork::Gnosis,
+        CowNetwork::Arbitrum,
+        CowNetwork::Base,
+        CowNetwork::Sepolia,
+    ];
+
+    fn review_json(order: &Order, network: CowNetwork) -> serde_json::Value {
+        serde_json::from_slice(&message_review(order, network)).unwrap()
+    }
+
+    /// Broker rebuilds the preimage from the envelope's typed data and
+    /// refuses the approval unless it hashes to the payload being signed.
+    /// Rebuild it the same way, with alloy's EIP-712 typed-data reader.
+    #[test]
+    fn message_review_rebuilds_the_signed_digest() {
+        let buy = Order {
+            kind: "buy".into(),
+            partiallyFillable: true,
+            receiver: Address::from_str("0x00000000000000000000000000000000000000ff").unwrap(),
+            feeAmount: U256::from(7u64),
+            sellAmount: U256::MAX,
+            ..example_order()
+        };
+        for order in [example_order(), buy] {
+            for network in ALL_NETWORKS {
+                let review = review_json(&order, network);
+                let typed: alloy_dyn_abi::TypedData =
+                    serde_json::from_value(review["typed_data"].clone()).unwrap();
+                assert_eq!(
+                    typed.eip712_signing_hash().unwrap(),
+                    order_digest(&order, network),
+                    "{network:?}"
+                );
+                let mut preimage = vec![0x19, 0x01];
+                preimage.extend_from_slice(typed.domain.separator().as_slice());
+                preimage.extend_from_slice(typed.hash_struct().unwrap().as_slice());
+                assert_eq!(preimage, signing_preimage(&order, network), "{network:?}");
+            }
+        }
+    }
+
+    /// Machine binds the envelope bytes into the approval, so a retry must
+    /// send exactly the same bytes.
+    #[test]
+    fn message_review_bytes_are_stable() {
+        let order = example_order();
+        assert_eq!(
+            message_review(&order, CowNetwork::Mainnet),
+            message_review(&order.clone(), CowNetwork::Mainnet)
+        );
+        assert_ne!(
+            message_review(&order, CowNetwork::Mainnet),
+            message_review(&order, CowNetwork::Gnosis)
+        );
+    }
+
+    fn keys(value: &serde_json::Value) -> Vec<&str> {
+        let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        keys
+    }
+
+    fn assert_broker_bounds(value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, value) in map {
+                    assert!(
+                        !key.is_empty()
+                            && key.len() <= 128
+                            && key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b':'),
+                        "property name {key:?}"
+                    );
+                    assert_broker_bounds(value);
+                }
+            }
+            serde_json::Value::Array(values) => values.iter().for_each(assert_broker_bounds),
+            serde_json::Value::String(text) => assert!(text.len() <= 8192),
+            _ => {}
+        }
+    }
+
+    /// The shape Broker's `bloom.message.review.v1` reader accepts: no member
+    /// it does not expect, anywhere, because it refuses unsigned extras.
+    #[test]
+    fn message_review_matches_the_broker_envelope_shape() {
+        for network in ALL_NETWORKS {
+            let review = review_json(&example_order(), network);
+            assert_broker_bounds(&review);
+            assert_eq!(keys(&review), ["kind", "schema", "typed_data"]);
+            assert_eq!(review["schema"], "bloom.message.review.v1");
+            assert_eq!(review["kind"], "eip712");
+            let typed = &review["typed_data"];
+            assert_eq!(keys(typed), ["domain", "message", "primaryType", "types"]);
+            assert_eq!(typed["primaryType"], "Order");
+            for key in keys(&typed["domain"]) {
+                assert!(
+                    ["name", "version", "chainId", "verifyingContract", "salt"].contains(&key),
+                    "domain member {key}"
+                );
+            }
+            assert_eq!(typed["domain"]["chainId"], network.chain_id());
+            let types = typed["types"].as_object().unwrap();
+            for fields in types.values() {
+                for field in fields.as_array().unwrap() {
+                    assert_eq!(keys(field), ["name", "type"]);
+                }
+            }
+            let order_fields: Vec<&str> = types["Order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| field["name"].as_str().unwrap())
+                .collect();
+            let mut sorted = order_fields.clone();
+            sorted.sort_unstable();
+            assert_eq!(keys(&typed["message"]), sorted, "message carries exactly the Order fields");
+            // The struct's own EIP-712 type string fixes the field order.
+            let declared: Vec<String> = types["Order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| format!("{} {}", field["type"].as_str().unwrap(), field["name"].as_str().unwrap()))
+                .collect();
+            assert_eq!(
+                format!("Order({})", declared.join(",")),
+                Order::eip712_root_type()
+            );
+        }
     }
 }

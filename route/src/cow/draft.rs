@@ -195,7 +195,12 @@ pub fn load_draft(key: &str) -> Result<OrderDraft, DispatchResponse> {
         Err(SdkError::Host(HostStatus::NotFound)) => {
             return Err(petal::error(-1, "order draft not found"))
         }
-        Err(error) => return Err(petal::error(-4, format!("read draft: {}", error.message()))),
+        Err(error) => {
+            return Err(petal::error(
+                -4,
+                format!("read draft: {}", crate::cow::host_error_text(&error)),
+            ));
+        }
     };
     let draft: OrderDraft = serde_json::from_slice(&bytes)
         .map_err(|e| petal::error(-4, format!("draft record is corrupt: {e}")))?;
@@ -210,7 +215,7 @@ pub fn save_draft(key: &str, draft: &OrderDraft) -> Result<(), DispatchResponse>
     let bytes = serde_json::to_vec(draft)
         .map_err(|e| petal::error(-4, format!("encode draft: {e}")))?;
     petal::sdk::store_put(key, &bytes, false)
-        .map_err(|e| petal::error(-4, format!("persist draft: {}", e.message())))
+        .map_err(|e| petal::error(-4, format!("persist draft: {}", crate::cow::host_error_text(&e))))
 }
 
 /// The parsed side of a draft request body.
