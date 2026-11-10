@@ -40,7 +40,7 @@ petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_lis
         }
         Err(e) => Err(petal::error(
             -4,
-            format!("list drafts: {}", crate::cow::host_error_text(&e)),
+            format!("list drafts: {}", petal::sdk::describe_error(&e)),
         )),
     }
 });

@@ -34,7 +34,7 @@ fn request(method: &str, url: &str, body: Vec<u8>) -> Result<petal::sdk::HttpRes
 pub fn sdk_error(error: SdkError) -> DispatchResponse {
     petal::error(
         -4,
-        format!("orderbook request failed: {}", crate::cow::host_error_text(&error)),
+        format!("orderbook request failed: {}", petal::sdk::describe_error(&error)),
     )
 }
 
@@ -79,6 +79,73 @@ pub fn post_json(
     }
     serde_json::from_slice(&response.body)
         .map_err(|e| petal::error(-4, format!("cow api response JSON: {e}")))
+}
+
+/// The orderbook's answer to an order POST.
+#[derive(Debug)]
+pub enum OrderPost {
+    /// A 2xx: the orderbook created the order. The body is its UID.
+    Created(serde_json::Value),
+    /// A 4xx: the orderbook did not create the order. `error_type` is the
+    /// API's `errorType`, such as `NonZeroFee` or `DuplicatedOrder`.
+    Refused {
+        status: u16,
+        error_type: Option<String>,
+        message: String,
+    },
+}
+
+/// POST an order to `/orders`. A transport failure, a 5xx or an unreadable
+/// 2xx body is an error: the order may or may not exist.
+pub fn post_order(network: CowNetwork, body: &serde_json::Value) -> Result<OrderPost, DispatchResponse> {
+    let url = format!("{}/orders", api_root(network));
+    let encoded = serde_json::to_vec(body)
+        .map_err(|e| petal::error(-4, format!("encode request JSON: {e}")))?;
+    let response = request("POST", &url, encoded)?;
+    let message = || {
+        format!(
+            "cow api error (status {}) on POST {}",
+            response.status,
+            excerpt("/orders", &response.body)
+        )
+    };
+    match response.status {
+        200..=299 => serde_json::from_slice(&response.body)
+            .map(OrderPost::Created)
+            .map_err(|e| petal::error(-4, format!("cow api response JSON: {e}"))),
+        400..=499 => Ok(OrderPost::Refused {
+            status: response.status,
+            error_type: error_type(&response.body),
+            message: message(),
+        }),
+        _ => Err(petal::error(-4, message())),
+    }
+}
+
+/// GET `/orders/<uid>`. `None` when the orderbook answers 404: it has no
+/// order with that UID.
+pub fn get_order(network: CowNetwork, uid: &str) -> Result<Option<serde_json::Value>, DispatchResponse> {
+    let path = format!("/orders/{uid}");
+    let response = request("GET", &format!("{}{path}", api_root(network)), Vec::new())?;
+    match response.status {
+        200..=299 => serde_json::from_slice(&response.body)
+            .map(Some)
+            .map_err(|e| petal::error(-4, format!("cow api response JSON: {e}"))),
+        404 => Ok(None),
+        status => Err(petal::error(
+            -4,
+            format!("cow api error (status {status}) on GET {}", excerpt(&path, &response.body)),
+        )),
+    }
+}
+
+/// The `errorType` of an orderbook error body, when it is a plain
+/// identifier.
+fn error_type(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let kind = value.get("errorType")?.as_str()?;
+    (!kind.is_empty() && kind.len() <= 64 && kind.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'))
+        .then(|| kind.to_string())
 }
 
 /// A short, sanitized excerpt of an upstream error body: no control
@@ -131,5 +198,17 @@ mod tests {
         assert!(shown.ends_with('…'));
         assert_eq!(excerpt("/api/v1/x", b""), "/api/v1/x: (no body)");
         assert_eq!(excerpt("/p", b"a\nb\x00c"), "/p: a b c");
+    }
+
+    #[test]
+    fn error_types_are_plain_identifiers() {
+        assert_eq!(
+            error_type(br#"{"errorType":"NonZeroFee","description":"Fee must be zero"}"#),
+            Some("NonZeroFee".into())
+        );
+        assert_eq!(error_type(br#"{"errorType":"Bad Type"}"#), None);
+        assert_eq!(error_type(br#"{"errorType":""}"#), None);
+        assert_eq!(error_type(br#"{"description":"no type"}"#), None);
+        assert_eq!(error_type(b"not json"), None);
     }
 }

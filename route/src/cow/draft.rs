@@ -142,21 +142,29 @@ pub fn max_sell_amount(quoted_sell: U256, slippage_bps: u64) -> U256 {
 }
 
 /// Build the slippage-bounded order view from a quote.
+///
+/// The orderbook refuses an order whose `feeAmount` is not zero
+/// (`NonZeroFee`), so the network costs the quote reports as `feeAmount` are
+/// paid from the signed amounts instead: a sell order sells the whole
+/// requested amount, `sellAmount + feeAmount`, and a buy order bounds that
+/// sum with slippage.
 pub fn order_from_quote(
     quote: &QuotedOrder,
     side: QuoteSide,
     slippage_bps: u64,
 ) -> Result<SignedOrderView, String> {
     let parse = |value: &str| U256::from_str_radix(value, 10);
+    let quoted_sell = parse(&quote.sell_amount).map_err(|_| "quote sellAmount")?;
+    let quoted_fee = parse(&quote.fee_amount).map_err(|_| "quote feeAmount")?;
+    let sell_with_fee = quoted_sell
+        .checked_add(quoted_fee)
+        .ok_or("quote sellAmount plus feeAmount overflows")?;
     let (sell_amount, buy_amount, kind) = match side {
         QuoteSide::Sell => {
             let quoted_buy = parse(&quote.buy_amount).map_err(|_| "quote buyAmount")?;
-            (quote.sell_amount.clone(), min_buy_amount(quoted_buy, slippage_bps).to_string(), "sell")
+            (sell_with_fee.to_string(), min_buy_amount(quoted_buy, slippage_bps).to_string(), "sell")
         }
-        QuoteSide::Buy => {
-            let quoted_sell = parse(&quote.sell_amount).map_err(|_| "quote sellAmount")?;
-            (max_sell_amount(quoted_sell, slippage_bps).to_string(), quote.buy_amount.clone(), "buy")
-        }
+        QuoteSide::Buy => (max_sell_amount(sell_with_fee, slippage_bps).to_string(), quote.buy_amount.clone(), "buy"),
     };
     if quote.kind != kind {
         return Err(format!(
@@ -173,7 +181,7 @@ pub fn order_from_quote(
         valid_to: quote.valid_to,
         app_data: format!("{:#x}", app_data::app_data_hash()),
         app_data_document: app_data::app_data_document(),
-        fee_amount: quote.fee_amount.clone(),
+        fee_amount: "0".into(),
         kind: kind.to_string(),
         partially_fillable: false,
         sell_token_balance: "erc20".into(),
@@ -198,7 +206,7 @@ pub fn load_draft(key: &str) -> Result<OrderDraft, DispatchResponse> {
         Err(error) => {
             return Err(petal::error(
                 -4,
-                format!("read draft: {}", crate::cow::host_error_text(&error)),
+                format!("read draft: {}", petal::sdk::describe_error(&error)),
             ));
         }
     };
@@ -215,7 +223,7 @@ pub fn save_draft(key: &str, draft: &OrderDraft) -> Result<(), DispatchResponse>
     let bytes = serde_json::to_vec(draft)
         .map_err(|e| petal::error(-4, format!("encode draft: {e}")))?;
     petal::sdk::store_put(key, &bytes, false)
-        .map_err(|e| petal::error(-4, format!("persist draft: {}", crate::cow::host_error_text(&e))))
+        .map_err(|e| petal::error(-4, format!("persist draft: {}", petal::sdk::describe_error(&e))))
 }
 
 /// The parsed side of a draft request body.
@@ -443,14 +451,15 @@ mod tests {
     fn sell_order_view_carries_the_quote_and_bounds() {
         let view = order_from_quote(&quoted("sell"), QuoteSide::Sell, 50).unwrap();
         assert_eq!(view.kind, "sell");
-        assert_eq!(view.sell_amount, "9999312248");
+        // 9999312248 + 687752: the whole sellAmountBeforeFee the quote asked for.
+        assert_eq!(view.sell_amount, "10000000000");
         assert_eq!(
             view.buy_amount,
             (U256::from(4_308_666_162_407_131_131u128) * U256::from(9_950u64)
                 / U256::from(10_000u64))
             .to_string()
         );
-        assert_eq!(view.fee_amount, "687752");
+        assert_eq!(view.fee_amount, "0");
         assert_eq!(view.valid_to, 1_793_804_915);
         assert!(!view.partially_fillable);
         assert_eq!(view.sell_token_balance, "erc20");
@@ -471,11 +480,9 @@ mod tests {
         let view = order_from_quote(&quoted("buy"), QuoteSide::Buy, 100).unwrap();
         assert_eq!(view.kind, "buy");
         assert_eq!(view.buy_amount, "4308666162407131131");
-        // ceil(9999312248 * 10100 / 10000)
-        let expected = (U256::from(9_999_312_248u64) * U256::from(10_100u64)
-            + U256::from(9_999u64))
-            / U256::from(10_000u64);
-        assert_eq!(view.sell_amount, expected.to_string());
+        // ceil((9999312248 + 687752) * 10100 / 10000)
+        assert_eq!(view.sell_amount, "10100000000");
+        assert_eq!(view.fee_amount, "0");
     }
 
     #[test]

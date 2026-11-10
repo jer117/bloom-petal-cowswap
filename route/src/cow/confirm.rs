@@ -6,7 +6,7 @@
 //! after approval.
 //!
 //! The signing request carries the order's full EIP-712 typed data as a
-//! `bloom.message.review.v1` envelope ([`order::message_review`]). Bloom
+//! [`petal::MessageReview`] envelope ([`order::message_review`]). Bloom
 //! refuses an EIP-712 signature without one; with it, Broker rebuilds the
 //! preimage, checks it is the payload being signed, and shows the owner
 //! every `Order` field.
@@ -73,6 +73,10 @@ pub fn confirm_draft(
                 let _ = draft::save_draft(&key, &stored);
                 return DispatchResponse::Write;
             }
+            // The orderbook has no order with this UID, so sign and post the
+            // same order again. That cannot create a second order: the UID
+            // is fixed by the order, and the orderbook refuses a duplicate.
+            Reconciled::NotPosted => {}
             Reconciled::StillUnknown => {
                 let _ = draft::save_draft(&key, &stored);
                 return petal::error(
@@ -104,11 +108,15 @@ pub fn confirm_draft(
     // Freshness: do not sign an order about to lapse.
     let now_seconds = match petal::sdk::try_now_ms() {
         Ok(ms) => ms / 1000,
-        Err(e) => return petal::error(-4, format!("read clock: {}", crate::cow::host_error_text(&e))),
+        Err(e) => return petal::error(-4, format!("read clock: {}", petal::sdk::describe_error(&e))),
     };
     if now_seconds + MIN_REMAINING_VALIDITY_SECONDS > u64::from(gpv2.validTo) {
         return petal::error(-3, "quote has expired; create a new draft for a fresh quote");
     }
+    let review = match order::message_review(&gpv2, network) {
+        Ok(review) => review,
+        Err(e) => return petal::error(-4, format!("order message review: {e}")),
+    };
     let preimage = order::signing_preimage(&gpv2, network);
     let payload = petal::PayloadSignItem {
         claimed_hash: alloy::primitives::keccak256(&preimage).0,
@@ -130,7 +138,7 @@ pub fn confirm_draft(
         Ok(request) => request,
         Err(resp) => return resp,
     };
-    request.action = Some(order::message_review(&gpv2, network));
+    request.action = Some(review.into_bytes());
     match petal::sdk::sign_payload(&request) {
         Ok(SignOutcome::Signature(raw)) => {
             let _ = draft::save_draft(&key, &stored);
@@ -156,7 +164,7 @@ pub fn confirm_draft(
         }
         Err(e) => {
             // Read the host's reason before saving the draft replaces it.
-            let message = format!("signing failed: {}", crate::cow::host_error_text(&e));
+            let message = format!("signing failed: {}", petal::sdk::describe_error(&e));
             stored.last_error = Some(message.clone());
             let _ = draft::save_draft(&key, &stored);
             petal::error(-4, message)
@@ -187,6 +195,7 @@ fn claim_effects(draft: &OrderDraft, network: CowNetwork) -> petal::ClaimEffects
 
 enum Reconciled {
     Posted,
+    NotPosted,
     StillUnknown,
     Failed(DispatchResponse),
 }
@@ -202,18 +211,12 @@ fn reconcile(draft: &OrderDraft, network: CowNetwork) -> Reconciled {
         Err(_) => return Reconciled::StillUnknown,
     };
     let uid = order::order_uid(&gpv2, owner, network);
-    match http::get_json(network, &format!("/orders/0x{}", hex::encode(uid))) {
-        Ok(found) => {
-            if found.get("uid").is_some() {
-                Reconciled::Posted
-            } else {
-                Reconciled::StillUnknown
-            }
-        }
-        Err(resp) => match resp {
-            DispatchResponse::Error { code: -4, .. } => Reconciled::StillUnknown,
-            other => Reconciled::Failed(other),
-        },
+    match http::get_order(network, &format!("0x{}", hex::encode(uid))) {
+        Ok(Some(found)) if found.get("uid").is_some() => Reconciled::Posted,
+        Ok(Some(_)) => Reconciled::StillUnknown,
+        Ok(None) => Reconciled::NotPosted,
+        Err(DispatchResponse::Error { code: -4, .. }) => Reconciled::StillUnknown,
+        Err(other) => Reconciled::Failed(other),
     }
 }
 
@@ -256,8 +259,8 @@ fn post_signed_order(
     // the orderbook, so nothing needs persisting from this point.
     let body = order_creation_body(stored, gpv2, owner, &signature, network);
     let expected_uid = format!("0x{}", hex::encode(order::order_uid(gpv2, owner, network)));
-    match http::post_json(network, "/orders", &body) {
-        Ok(response) => {
+    match http::post_order(network, &body) {
+        Ok(http::OrderPost::Created(response)) => {
             let returned_uid = response.as_str().map(str::to_string);
             let uid = match returned_uid {
                 Some(uid) if uid == expected_uid => uid,
@@ -276,16 +279,60 @@ fn post_signed_order(
                 Err(resp) => resp,
             }
         }
+        Ok(http::OrderPost::Refused {
+            status,
+            error_type,
+            message,
+        }) => match refusal(status, error_type.as_deref()) {
+            Refusal::AlreadyPosted => {
+                stored.status = DraftStatus::Posted;
+                stored.uid = Some(expected_uid);
+                stored.approval = None;
+                stored.last_error = None;
+                match draft::save_draft(key, stored) {
+                    Ok(()) => DispatchResponse::Write,
+                    Err(resp) => resp,
+                }
+            }
+            Refusal::RetryLater => {
+                stored.last_error = Some(message.clone());
+                let _ = draft::save_draft(key, stored);
+                petal::error(-4, format!("the orderbook is rate limiting; retry this confirm: {message}"))
+            }
+            Refusal::Rejected => {
+                stored.status = DraftStatus::Rejected;
+                stored.last_error = Some(message.clone());
+                let _ = draft::save_draft(key, stored);
+                petal::error(-3, format!("the orderbook refused the order; create a new draft: {message}"))
+            }
+        },
         Err(DispatchResponse::Error { code: -4, message }) => {
-            // Distinguish "refused" (a 4xx we reported) from "unknown". The
-            // HTTP adapter collapses status codes into -4, so treat any POST
-            // failure after signing as ambiguous and reconcile next time.
+            // A transport failure or a 5xx leaves the outcome unknown; the
+            // next confirm looks the order up by its UID first.
             stored.status = DraftStatus::Ambiguous;
             stored.last_error = Some(message.clone());
             let _ = draft::save_draft(key, stored);
             petal::error(-4, format!("order POST outcome unknown after signing: {message}"))
         }
         Err(resp) => resp,
+    }
+}
+
+/// What a 4xx answer to an order POST means for the draft. The orderbook did
+/// not create the order on that request: `DuplicatedOrder` means an earlier
+/// POST of this same order did, and a 429 asks for a later retry.
+#[derive(Debug, PartialEq, Eq)]
+enum Refusal {
+    AlreadyPosted,
+    RetryLater,
+    Rejected,
+}
+
+fn refusal(status: u16, error_type: Option<&str>) -> Refusal {
+    match (status, error_type) {
+        (_, Some("DuplicatedOrder")) => Refusal::AlreadyPosted,
+        (429, _) => Refusal::RetryLater,
+        _ => Refusal::Rejected,
     }
 }
 
@@ -368,6 +415,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn order_refusals_are_classified() {
+        assert_eq!(refusal(400, Some("NonZeroFee")), Refusal::Rejected);
+        assert_eq!(refusal(400, Some("InsufficientBalance")), Refusal::Rejected);
+        assert_eq!(refusal(400, None), Refusal::Rejected);
+        assert_eq!(refusal(403, Some("Forbidden")), Refusal::Rejected);
+        assert_eq!(refusal(400, Some("DuplicatedOrder")), Refusal::AlreadyPosted);
+        assert_eq!(refusal(429, None), Refusal::RetryLater);
+    }
+
     /// The envelope confirm sends for a stored draft rebuilds the exact
     /// payload confirm asks Bloom to sign, on every network.
     #[test]
@@ -381,14 +438,15 @@ mod tests {
             CowNetwork::Sepolia,
         ] {
             let review: serde_json::Value =
-                serde_json::from_slice(&order::message_review(&gpv2, network)).unwrap();
+                serde_json::from_slice(order::message_review(&gpv2, network).unwrap().as_bytes()).unwrap();
             let typed: alloy_dyn_abi::TypedData =
                 serde_json::from_value(review["typed_data"].clone()).unwrap();
             assert_eq!(
                 typed.eip712_signing_hash().unwrap(),
                 alloy::primitives::keccak256(order::signing_preimage(&gpv2, network))
             );
-            assert_eq!(review["typed_data"]["message"]["sellAmount"], "9999312248");
+            assert_eq!(review["typed_data"]["message"]["sellAmount"], "10000000000");
+            assert_eq!(review["typed_data"]["message"]["feeAmount"], "0");
         }
     }
 

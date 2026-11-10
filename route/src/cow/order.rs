@@ -70,65 +70,60 @@ pub fn order_digest(order: &Order, network: CowNetwork) -> B256 {
     keccak256(signing_preimage(order, network))
 }
 
-/// The `bloom.message.review.v1` envelope Bloom requires beside any EIP-712
-/// signature: the complete typed data for `order` on `network`. Broker
-/// rebuilds the signing preimage from it, refuses the approval unless that
-/// preimage is the exact payload being signed, and shows the owner every
-/// `Order` field. The bytes depend only on the order and the network, so a
-/// retried confirm presents the same envelope Machine bound to the approval.
-pub fn message_review(order: &Order, network: CowNetwork) -> Vec<u8> {
+/// The message review Bloom requires beside any EIP-712 signature: the
+/// complete typed data for `order` on `network`. Broker rebuilds the signing
+/// preimage from it, refuses the approval unless that preimage is the exact
+/// payload being signed, and shows the owner every `Order` field. The bytes
+/// depend only on the order and the network, so a retried confirm presents
+/// the same envelope Machine bound to the approval.
+pub fn message_review(order: &Order, network: CowNetwork) -> Result<petal::MessageReview, String> {
     let field = |name: &str, ty: &str| serde_json::json!({ "name": name, "type": ty });
     let domain = domain(network);
-    let envelope = serde_json::json!({
-        "schema": "bloom.message.review.v1",
-        "kind": "eip712",
-        "typed_data": {
-            "types": {
-                "EIP712Domain": [
-                    field("name", "string"),
-                    field("version", "string"),
-                    field("chainId", "uint256"),
-                    field("verifyingContract", "address"),
-                ],
-                "Order": [
-                    field("sellToken", "address"),
-                    field("buyToken", "address"),
-                    field("receiver", "address"),
-                    field("sellAmount", "uint256"),
-                    field("buyAmount", "uint256"),
-                    field("validTo", "uint32"),
-                    field("appData", "bytes32"),
-                    field("feeAmount", "uint256"),
-                    field("kind", "string"),
-                    field("partiallyFillable", "bool"),
-                    field("sellTokenBalance", "string"),
-                    field("buyTokenBalance", "string"),
-                ],
-            },
-            "primaryType": "Order",
-            "domain": {
-                "name": domain.name.as_deref(),
-                "version": domain.version.as_deref(),
-                "chainId": network.chain_id(),
-                "verifyingContract": domain.verifying_contract.map(|address| format!("{address:#x}")),
-            },
-            "message": {
-                "sellToken": format!("{:#x}", order.sellToken),
-                "buyToken": format!("{:#x}", order.buyToken),
-                "receiver": format!("{:#x}", order.receiver),
-                "sellAmount": order.sellAmount.to_string(),
-                "buyAmount": order.buyAmount.to_string(),
-                "validTo": order.validTo,
-                "appData": format!("{:#x}", order.appData),
-                "feeAmount": order.feeAmount.to_string(),
-                "kind": order.kind,
-                "partiallyFillable": order.partiallyFillable,
-                "sellTokenBalance": order.sellTokenBalance,
-                "buyTokenBalance": order.buyTokenBalance,
-            },
+    petal::MessageReview::eip712(serde_json::json!({
+        "types": {
+            "EIP712Domain": [
+                field("name", "string"),
+                field("version", "string"),
+                field("chainId", "uint256"),
+                field("verifyingContract", "address"),
+            ],
+            "Order": [
+                field("sellToken", "address"),
+                field("buyToken", "address"),
+                field("receiver", "address"),
+                field("sellAmount", "uint256"),
+                field("buyAmount", "uint256"),
+                field("validTo", "uint32"),
+                field("appData", "bytes32"),
+                field("feeAmount", "uint256"),
+                field("kind", "string"),
+                field("partiallyFillable", "bool"),
+                field("sellTokenBalance", "string"),
+                field("buyTokenBalance", "string"),
+            ],
         },
-    });
-    serde_json::to_vec(&envelope).expect("a JSON value always serializes")
+        "primaryType": "Order",
+        "domain": {
+            "name": domain.name.as_deref(),
+            "version": domain.version.as_deref(),
+            "chainId": network.chain_id(),
+            "verifyingContract": domain.verifying_contract.map(|address| format!("{address:#x}")),
+        },
+        "message": {
+            "sellToken": format!("{:#x}", order.sellToken),
+            "buyToken": format!("{:#x}", order.buyToken),
+            "receiver": format!("{:#x}", order.receiver),
+            "sellAmount": order.sellAmount.to_string(),
+            "buyAmount": order.buyAmount.to_string(),
+            "validTo": order.validTo,
+            "appData": format!("{:#x}", order.appData),
+            "feeAmount": order.feeAmount.to_string(),
+            "kind": order.kind,
+            "partiallyFillable": order.partiallyFillable,
+            "sellTokenBalance": order.sellTokenBalance,
+            "buyTokenBalance": order.buyTokenBalance,
+        },
+    }))
 }
 
 /// The 56-byte order UID: `digest ‖ owner ‖ validTo`, as computed by
@@ -304,7 +299,7 @@ mod tests {
     ];
 
     fn review_json(order: &Order, network: CowNetwork) -> serde_json::Value {
-        serde_json::from_slice(&message_review(order, network)).unwrap()
+        serde_json::from_slice(message_review(order, network).unwrap().as_bytes()).unwrap()
     }
 
     /// Broker rebuilds the preimage from the envelope's typed data and
@@ -344,12 +339,12 @@ mod tests {
     fn message_review_bytes_are_stable() {
         let order = example_order();
         assert_eq!(
-            message_review(&order, CowNetwork::Mainnet),
-            message_review(&order.clone(), CowNetwork::Mainnet)
+            message_review(&order, CowNetwork::Mainnet).unwrap(),
+            message_review(&order.clone(), CowNetwork::Mainnet).unwrap()
         );
         assert_ne!(
-            message_review(&order, CowNetwork::Mainnet),
-            message_review(&order, CowNetwork::Gnosis)
+            message_review(&order, CowNetwork::Mainnet).unwrap(),
+            message_review(&order, CowNetwork::Gnosis).unwrap()
         );
     }
 

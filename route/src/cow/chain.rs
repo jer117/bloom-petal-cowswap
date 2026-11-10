@@ -26,7 +26,7 @@ sol! {
 pub fn verify_chain_route(network: CowNetwork) -> Result<(), DispatchResponse> {
     let path = format!("chains/{}/chain_id", network.bloom_chain());
     let bytes = petal::sdk::vfs_read(&path, 64)
-        .map_err(|e| petal::error(-4, format!("read {path}: {}", crate::cow::host_error_text(&e))))?;
+        .map_err(|e| petal::error(-4, format!("read {path}: {}", petal::sdk::describe_error(&e))))?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| petal::error(-4, format!("{path} is not UTF-8")))?;
     let live: u64 = text
@@ -54,7 +54,7 @@ fn eth_call(network: CowNetwork, to: Address, data: Vec<u8>, what: &str) -> Resu
     ])
     .to_string();
     let result = petal::sdk::chain_read(network.bloom_chain(), "eth_call", &params)
-        .map_err(|e| petal::error(-4, format!("{what}: {}", crate::cow::host_error_text(&e))))?;
+        .map_err(|e| petal::error(-4, format!("{what}: {}", petal::sdk::describe_error(&e))))?;
     let result: String = serde_json::from_str(&result)
         .map_err(|_| petal::error(-4, format!("{what} returned non-string JSON")))?;
     let body = result
