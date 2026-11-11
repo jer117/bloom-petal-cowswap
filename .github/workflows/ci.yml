@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # scripts/petal.sh installs the petal CLI of the SDK commit that
+      # route/Cargo.lock pins here, so this cache follows the lockfile.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/bloom-petal
+          key: petal-tools-${{ runner.os }}-${{ hashFiles('route/Cargo.lock') }}
+      - name: Test the route crate
+        run: cargo test --manifest-path route/Cargo.toml --locked
+      - name: Check the route architecture
+        run: bash scripts/check-route-architecture.sh
+      - name: Build route components
+        run: scripts/build.sh
+      - name: Check generated capabilities
+        run: scripts/petal.sh check

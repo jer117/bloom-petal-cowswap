@@ -1,6 +1,14 @@
 schema = "bloom.petal.package.v1"
 name = "cowswap"
 
+[source]
+kind = "github"
+repository = "saturn-dbeal/bloom-petal-cowswap"
+
+[build]
+command = "scripts/build.sh"
+outputs = ["petal/cowswap"]
+
 [consent]
 summary = "Expose CoW Protocol orderbook reads (quotes, account orders, order status), ERC20 allowance checks against the Vault Relayer, and a reviewable order draft/sign/post flow as a Petal."
 

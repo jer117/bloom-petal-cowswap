@@ -1,5 +1,8 @@
 /target/
 /route/target/
+# Built by `scripts/build.sh`; releases build it again from source.
+/petal/
+# Written by `bloom petals build`; derived from the route sources.
 /artifacts/
 /dist/
-/petal/cowswap/**/*.wasm
+*.petal.tar.gz

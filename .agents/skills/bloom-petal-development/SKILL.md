@@ -21,14 +21,31 @@ typed infrastructure.
 4. Preserve unrelated work in a dirty worktree.
 
 When starting a new Petal, prefer the canonical `petal new` scaffold and adapt
-its generated structure instead of inventing a parallel layout:
+its generated structure instead of inventing a parallel layout. The CLI and
+SDK are released together as `vX.Y.Z` tags of the petal repository, not on
+crates.io. Install the CLI of the release you will build against:
 
 ```sh
+cargo install --locked --git https://github.com/bloom-directory/petal --tag v<version> bloom-petal-cli
 petal new <petal-name> <destination>
 ```
 
 The command refuses an existing destination. Do not replace an existing
 repository with a fresh scaffold.
+
+The scaffold pins the SDK to that tag in `route/Cargo.toml`, with
+`host-error-detail` on, and the tag is the Petal's only SDK version:
+
+- `scripts/petal.sh` runs the CLI of the SDK commit `route/Cargo.lock` pins,
+  installing it and its `wasm-tools` on first use, and refuses a commit the
+  tag does not name;
+- `scripts/build.sh`, CI and the release workflow go through it;
+- `petal build` refuses an SDK of another version than its own.
+
+To upgrade, change the tag, run
+`cargo update --manifest-path route/Cargo.toml -p bloom-petal-sdk`, and
+refresh this skill with `scripts/petal.sh skill --root .`. `petal build` and
+`petal check` warn while it is stale.
 
 ## Resolve the product and trust contract
 
@@ -363,6 +380,41 @@ For side-effecting routes:
 Do not exercise production writes or material funds unless the user explicitly
 authorizes that environment and action.
 
+## Sign messages and typed data
+
+A payload whose first byte is `0x19`, under `secp256k1-keccak256-recoverable`,
+is an EIP-712 typed-data or EIP-191 personal message. Bloom signs one only
+through `sdk::sign_payload` with the exact selector, and only with a
+`bloom.message.review.v1` envelope as the request's `action`:
+
+```rust
+let mut request = claim.sign_request(account.wallet(), petal::SignSelector::Exact)?;
+let review = petal::MessageReview::eip712(typed_data).map_err(|e| petal::error(-4, e))?;
+request.action = Some(review.into_bytes());
+```
+
+`typed_data` is what `eth_signTypedData_v4` takes: exactly `types`,
+`primaryType`, `domain` and `message`. Broker rebuilds the preimage from it,
+refuses it unless it hashes to the payload, and shows the owner every typed
+field, so a Petal's own record in `action` is refused, and so is a message
+field the type does not declare. Write wide integers such as `uint256` amounts
+as decimal strings. `MessageReview` checks Broker's limits on size, nesting,
+types and the values shown, not each value against its type: test that the
+typed data hashes to the digest you sign with your EIP-712 library. Build the
+envelope from the same immutable fields on every retry, because Bloom binds
+the `action` bytes into the signing operation. Bloom refuses a message in
+`sign_payload_batch`, except under Polymarket's own classes; Safe
+confirmations carry Safe's own envelope. The rule is in Bloom's v0.5.0
+release set; earlier releases ignore the envelope.
+
+For a personal message, `MessageReview::personal(text)` takes the exact
+signed text. Bloom signs only UTF-8 text, so decode a `0x` hex message first.
+
+As for any signing route, the Petal's installer provenance must list the
+class, or Bloom refuses with `denied: installer provenance does not authorize
+<class>`. On a developer triad, enroll the Petal first, as described in
+[On a developer triad](#on-a-developer-triad).
+
 ## Protect sensitive material
 
 Private keys, derived agent keys, API secrets, bearer tokens, secret-store
@@ -493,7 +545,10 @@ Know what an install changes:
   workflow, the `package_hash` in its `petal-release.json`. That is the
   package hash of the published archive's contents, not its `archive_sha256`,
   and Bloom checks it when it installs a release pinned in its built-in
-  catalog. Building does not enroll a hash. Wallet policy allows Petal
+  catalog. Building does not enroll a hash, and a packaged Bloom has no
+  command that enrolls one: it signs and derives keys only for the Petals its
+  installer catalogs. A developer build can enroll a local Petal (see
+  [On a developer triad](#on-a-developer-triad)). Wallet policy allows Petal
   packages by hash (`allowed_petal_packages`), so the owner approves a policy
   update for a new hash before its routes can sign, derive keys or stage
   transactions for that wallet; reads do not need it.
@@ -503,9 +558,10 @@ Know what an install changes:
   the previous release's format. Test against a fixture store it wrote,
   including settings and secrets.
 - A signing route is authorized only for the operation classes its installer
-  provenance record lists. Without that record the write fails with a plain
-  permission error; for `sign_payload` with the exact selector, Machine's log
-  names the reason (`installer provenance does not authorize <class>`). See
+  provenance record lists. Without that record Bloom denies the sign call. For
+  `sign_payload` with the exact selector, Machine's log names the reason, and
+  with `host-error-detail` so does `sdk::describe_error`:
+  `denied: installer provenance does not authorize <class>`. See
   [Troubleshoot a bare `permission denied`](#troubleshoot-a-bare-permission-denied).
 - `--force` is not a reinstall flag. It replaces or removes a package while
   sessions scoped to it are still active; those sessions then read
@@ -530,7 +586,7 @@ services start: `BLOOM_TRIAD_DEV_POLYMARKET_PACKAGE` and
 `BLOOM_TRIAD_DEV_HYPERLIQUID_PACKAGE`. `BLOOM_TRIAD_DEV_BUILD_PETALS=0` skips
 building the Hyperliquid package; the Polymarket package is installed as it is.
 Only the Hyperliquid hook also enrolls installer provenance. For any other Petal
-that signs, enroll it before launching:
+that signs, enroll it by hand:
 
 ```sh
 bloom init triad-enroll-developer-petal-provenance <developer-root>/config <root>
@@ -540,12 +596,37 @@ The command exists only in the `triad-dev-harness` build of `bloom` that
 `scripts/triad-dev-launch.sh` builds (`<bloom-checkout>/target/debug/bloom`); a
 packaged `bloom` does not have it.
 
+It reads the installer key and catalog in `<developer-root>/config`, which the
+launcher creates on its first run. On a new developer root it fails with
+`canonicalize developer triad config directory`, so launch once, stop the
+triad, enroll, and launch again. The launcher re-signs the catalog on every
+start and keeps locally enrolled records.
+
 Enrollment hashes the package directory the way `bloom petals install` does,
 from the components already built under `petal/<name>/`, so run `petal build`
 first and install the same files afterwards. Any file changed or added under
 the root since enrollment changes the hash, and the provenance no longer
 matches. Machine and Broker read the catalog at startup, so enroll before the
 triad starts or restart it afterwards.
+
+The Hyperliquid hook takes any Petal directory with a route that signs or
+derives keys: it runs the Petal's `scripts/build.sh`, which `petal new` writes,
+enrolls the Petal once the config exists, before the services start, and
+installs it after they start. To do all three for your Petal in one launch, set
+`BLOOM_TRIAD_DEV_HYPERLIQUID_PACKAGE=<root>`. `BLOOM_TRIAD_DEV_BUILD_PETALS=0`
+skips the build, for a Petal without `scripts/build.sh`. Enrollment refuses a
+Petal with no such route and the launch stops, so add one to a `petal new`
+scaffold before you point the hook at it.
+
+## Read why Bloom refused a call
+
+With the SDK's `host-error-detail` feature, `petal::sdk::describe_error(&err)`
+reads `invalid: <reason>` where `err.message()` reads only `invalid`. Call it
+straight after the failing call: the next host call replaces the reason. On
+the mount a route error is a bare EIO or EINVAL. Bloom keeps a failed write's
+message, with its `path` and `at_ms`, at `petals/<name>/last_error.json` until
+that path's next write succeeds; for a read, reproduce with `bloom vfs cat`.
+Machine drops the message of any `-2` response, as described below.
 
 ## Troubleshoot a bare `permission denied`
 
