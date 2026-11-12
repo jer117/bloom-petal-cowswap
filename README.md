@@ -47,7 +47,7 @@ duplicate, and this Petal records the first one.
 ## Building
 
 Components build from the route crate's committed lockfile, with the petal CLI
-of the SDK release that lockfile pins. `scripts/build.sh` runs that CLI through
+of the SDK commit that lockfile pins. `scripts/build.sh` runs that CLI through
 `scripts/petal.sh`, which installs it on first use, so the build never depends
 on whichever `petal` is on PATH:
 
@@ -59,16 +59,17 @@ scripts/petal.sh check
 
 Then validate the built package with `bloom petals build .`.
 
-Until the SDK's `v0.2.0` tag exists, `route/Cargo.toml` pins the SDK by commit,
-and `scripts/petal.sh` installs a CLI only for a release tag. Until then, build
-with a 0.2.0 petal CLI you built yourself:
+`route/Cargo.toml` pins the SDK by commit until the SDK's `v0.2.0` release is
+tagged. To move to another SDK commit, change `rev` there, run
+`cargo update --manifest-path route/Cargo.toml -p bloom-petal-sdk`, and set the
+same commit in `.github/workflows/release.yml`. Once the tag exists, pin
+`tag = "v0.2.0"` instead.
+
+To build with a petal CLI you built yourself:
 
 ```sh
 PETAL_BIN=/path/to/petal scripts/build.sh
 ```
-
-Once the tag exists, change the pin to `tag = "v0.2.0"` and run
-`cargo update --manifest-path route/Cargo.toml -p bloom-petal-sdk`.
 
 Before pushing, enforce the route architecture rules from the
 `bloom-petal-development` skill:
@@ -80,9 +81,11 @@ bash scripts/check-route-architecture.sh
 ## Releasing
 
 Pushing a `vX.Y.Z` tag runs `.github/workflows/release.yml`, which builds and
-packages with the petal CLI of the pinned SDK release and publishes the
-archive, its checksum and `petal-release.json`. It needs the SDK pinned to a
-release tag, so it cannot run before the pin above changes.
+packages with the petal CLI of the pinned SDK commit and publishes the
+archive, its checksum and `petal-release.json`. The workflow takes an SDK
+commit only if it is on `bloom-directory/petal`'s `master` or is a release tag.
+The commit pinned today is on a pull request branch, so a release has to wait
+until that work is merged and the pin moves to the merged commit.
 
 See `DESIGN.md` for the design decisions, verification vectors, and known
 gaps.

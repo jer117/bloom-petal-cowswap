@@ -12,9 +12,10 @@ jobs:
       contents: write
     # The workflow builds and packages with the petal CLI of the SDK commit
     # that route/Cargo.lock pins. This reference selects only the workflow
-    # itself; for a release others install, pin it to the full commit the tag
-    # names (`git ls-remote https://github.com/bloom-directory/petal v0.2.0`).
-    uses: bloom-directory/petal/.github/workflows/release-petal.yml@v0.2.0
+    # itself; keep it at the same commit as the SDK pin in route/Cargo.toml.
+    # The workflow takes an SDK commit only if it is on bloom-directory/petal's
+    # master or is a release tag.
+    uses: bloom-directory/petal/.github/workflows/release-petal.yml@81882e7e7772af3f37ff94565d375a16cb0dcba6
     with:
       petal-name: cowswap
       # Fails the release if a route goes missing from the package.
