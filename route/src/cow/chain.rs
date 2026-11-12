@@ -21,8 +21,9 @@ sol! {
 }
 
 /// Verify Bloom's chain route for `network` really is the chain this Petal
-/// signs for, using the VFS chain projection, before any chain call or
-/// signature uses it.
+/// means, using the VFS chain projection, before a chain call uses it. The
+/// allowance route calls this; confirm makes no chain call, and takes the
+/// order's chain id from the network itself.
 pub fn verify_chain_route(network: CowNetwork) -> Result<(), DispatchResponse> {
     let path = format!("chains/{}/chain_id", network.bloom_chain());
     let bytes = petal::sdk::vfs_read(&path, 64)

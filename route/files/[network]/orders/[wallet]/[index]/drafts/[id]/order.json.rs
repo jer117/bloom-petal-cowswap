@@ -1,6 +1,10 @@
 // drafts/<id>/order.json — the reviewable draft: quote, slippage bound, the
 // exact order that confirm signs, and the approval requirement.
-petal::route_file!(spec: petal::store_read_spec(), read: |ctx: &petal::Ctx| {
+//
+// Not cached (TTL 0): a confirm changes the draft's status and pending
+// approval, and Bloom keeps a cached read when the confirm write reports an
+// error, which is how "approval required" is reported.
+petal::route_file!(spec: petal::http_read_spec(0).caps(&["bloom:store"]), read: |ctx: &petal::Ctx| {
     let network = match petal::param(ctx, "network") {
         Ok(value) => value,
         Err(resp) => return resp,

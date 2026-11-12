@@ -1,4 +1,5 @@
-// Draft ids for this account, listed from its private store.
+// Draft ids for this account, listed from its private store. Ids begin with
+// their creation time, so the newest draft is the last one listed.
 petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_list: |ctx: &petal::Ctx| {
     let network = match petal::param(ctx, "network") {
         Ok(value) => value,
@@ -23,7 +24,8 @@ petal::route_file!(spec: petal::store_dir_spec().caps(&["bloom:store"]), ctx_lis
         account.wallet(),
         account.number()
     );
-    match petal::sdk::store_list(&prefix, 16 * 1024) {
+    // About 50 bytes of key per draft, so this holds roughly 10,000 drafts.
+    match petal::sdk::store_list(&prefix, 512 * 1024) {
         Ok(keys) => {
             let mut ids: Vec<String> = keys
                 .into_iter()

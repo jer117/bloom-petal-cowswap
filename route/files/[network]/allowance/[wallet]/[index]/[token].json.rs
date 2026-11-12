@@ -1,10 +1,13 @@
 // allowance/<wallet>/<index>/<0xTOKEN>.json
 // The account's ERC20 allowance to the GPv2 Vault Relayer for TOKEN, plus
 // its token balance, read from chain. CoW orders pull the sell token
-// (sellAmount + feeAmount) through the Vault Relayer, so an order needs
-// allowance >= sellAmount + feeAmount.
+// through the Vault Relayer, so an order needs both the allowance and the
+// balance to be at least its sell_amount.
+//
+// Not cached (TTL 0): an agent reads this again right after an approve
+// transaction, and a stale answer invites a second one.
 petal::route_file!(
-    spec: petal::static_read_spec().caps(&["bloom:chain", "bloom:vfs.read"]),
+    spec: petal::http_read_spec(0).caps(&["bloom:chain", "bloom:vfs.read"]),
     read: |ctx: &petal::Ctx| {
         let network = match petal::param(ctx, "network") {
             Ok(value) => value,
@@ -61,7 +64,7 @@ petal::route_file!(
             "spender_kind": "GPv2VaultRelayer",
             "allowance": allowance.to_string(),
             "balance": balance.to_string(),
-            "cow_ready": allowance > alloy::primitives::U256::ZERO,
+            "requirement": "an order needs allowance and balance of at least its order_to_sign.sell_amount",
         }))
     }
 );

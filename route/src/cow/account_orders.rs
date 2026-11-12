@@ -16,13 +16,8 @@ pub fn account_orders(network: CowNetwork, owner: Address) -> Result<serde_json:
         network,
         &format!("/account/{}/orders?limit={HISTORY_LIMIT}", owner.to_checksum(None)),
     )?;
-    let rows = raw
-        .as_array()
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
-        .map(project_order)
-        .collect::<Vec<_>>();
+    let rows = project_rows(raw)
+        .map_err(|e| petal::error(-4, format!("cow api account orders: {e}")))?;
     Ok(serde_json::json!({
         "schema": "bloom.cowswap.account_orders.v1",
         "network": network.api_env(),
@@ -31,6 +26,16 @@ pub fn account_orders(network: CowNetwork, owner: Address) -> Result<serde_json:
         "count": rows.len(),
         "orders": rows,
     }))
+}
+
+/// Project the account-orders response. Anything but a list is an error: an
+/// empty history must mean the account has no orders, not that the answer
+/// was unreadable.
+fn project_rows(raw: serde_json::Value) -> Result<Vec<serde_json::Value>, String> {
+    match raw {
+        serde_json::Value::Array(rows) => Ok(rows.into_iter().map(project_order).collect()),
+        _ => Err("the response was not a list of orders".into()),
+    }
 }
 
 /// One orderbook order, projected. The signature field is dropped: it is
@@ -58,10 +63,10 @@ fn project_order(order: serde_json::Value) -> serde_json::Value {
     })
 }
 
-/// Fetch a single order by UID for the status route.
-pub fn order_by_uid(network: CowNetwork, uid: &str) -> Result<serde_json::Value, DispatchResponse> {
-    let raw = http::get_json(network, &format!("/orders/{uid}"))?;
-    Ok(project_order(raw))
+/// Look a single order up by UID for the status route. `None` means the
+/// orderbook has no order with that UID.
+pub fn find_order(network: CowNetwork, uid: &str) -> Result<Option<serde_json::Value>, DispatchResponse> {
+    Ok(http::get_order(network, uid)?.map(project_order))
 }
 
 #[cfg(test)]
@@ -89,18 +94,11 @@ mod tests {
     }
 
     #[test]
-    fn non_array_responses_project_to_an_empty_listing() {
-        // A malformed (non-array) account response yields an empty listing
-        // rather than an error, matching the projection's defensive `.cloned()
-        // .unwrap_or_default()` path.
-        let raw = serde_json::json!({"error": "unexpected"});
-        let rows: Vec<serde_json::Value> = raw
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .map(project_order)
-            .collect();
-        assert!(rows.is_empty());
+    fn a_response_that_is_not_a_list_is_an_error_not_an_empty_history() {
+        assert!(project_rows(serde_json::json!({"error": "unexpected"})).is_err());
+        assert!(project_rows(serde_json::Value::Null).is_err());
+        assert_eq!(project_rows(serde_json::json!([])).unwrap().len(), 0);
+        let raw: serde_json::Value = serde_json::from_str(LIVE_ROW).unwrap();
+        assert_eq!(project_rows(serde_json::json!([raw])).unwrap().len(), 1);
     }
 }

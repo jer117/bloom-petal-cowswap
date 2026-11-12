@@ -64,7 +64,7 @@ a path segment.
 1. **new** — validate body against strict grammars (`cow::params`: address,
    decimal atoms, side enum, slippage 1–5000 bps default 50), resolve the
    account address, `POST /api/v1/quote` (`priceQuality: verified`,
-   `validFor: 300`, this Petal's appData document), bound with slippage:
+   `validFor: 1800`, this Petal's appData document), bound with slippage:
    sell orders set `buyAmount = floor(quoted × (1−bps))`, buy orders set
    `sellAmount = ceil((quoted sellAmount + feeAmount) × (1+bps))`. The
    orderbook refuses a non-zero `feeAmount` (`NonZeroFee`), so the signed

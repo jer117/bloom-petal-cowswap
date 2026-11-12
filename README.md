@@ -16,15 +16,33 @@ after owner approval under the intent `cowswap.order.v1`.
 | `[network]/allowance/[wallet]/[index]/<0xTOKEN>.json` | read (chain) | ERC20 allowance to the GPv2 Vault Relayer + token balance, via `eth_call` |
 | `[network]/orders/[wallet]/[index]/new` | write | Create a reviewable order draft from a quote (nothing is posted) |
 | `[network]/orders/[wallet]/[index]/history.json` | read | The account's live orders (`GET /api/v1/account/{owner}/orders`) |
-| `[network]/orders/[wallet]/[index]/drafts/` | dir | The account's drafts, listed from its private store |
-| `…/drafts/<id>/order.json` | read | The reviewable intent: quote, slippage bound, the exact order to sign |
+| `[network]/orders/[wallet]/[index]/drafts/` | dir | The account's drafts, listed from its private store. Ids begin with their creation time, so the newest draft is listed last |
+| `…/drafts/<id>/order.json` | read | The reviewable intent: quote, slippage bound, the exact order to sign, and any pending approval |
 | `…/drafts/<id>/confirm` | signing write (`cowswap.order.v1`) | Sign the EIP-712 order through Bloom, which shows the owner every order field, and POST it; idempotent |
-| `…/drafts/<id>/status.json` | read | Local draft state merged with live orderbook status |
+| `…/drafts/<id>/status.json` | read | Local draft state merged with live orderbook status, looked up by the order's UID |
 
 `[network]` ∈ `mainnet`, `xdai` (Gnosis), `arbitrum_one`, `base`, `sepolia` — the
 exact API environment segments under `https://api.cow.fi`. Sepolia is the
 11155111 testnet deployment; the GPv2 contracts live at the same addresses as
 mainnet there (verified via the settlement's live `domainSeparator()`).
+
+## Draft lifecycle
+
+`order.json` and `status.json` report the draft's `status`:
+
+| Status | Meaning | What to do |
+| --- | --- | --- |
+| `quoted` | Created, or signed but not yet posted | Write `{"confirm":true}` to `confirm` |
+| `signing_pending` | Bloom is waiting for the owner to approve the request named in `approval.action_id` | Approve it in Bloom, then write the same confirm again |
+| `approval_lapsed` | The approval expired or was declined | Create a new draft |
+| `ambiguous` | The order was signed, but the result of posting it was not recorded | Read `status.json`, which looks the order up, or write confirm again, which does the same before posting anything |
+| `posted` | The orderbook holds the order | Follow it in `status.json` |
+| `rejected` | The orderbook refused the order | Create a new draft |
+
+A confirm that does not post the order returns an error whose message says
+which of these applies. The order's UID is fixed by the order itself, so a
+retried confirm can never create a second order: the orderbook refuses a
+duplicate, and this Petal records the first one.
 
 ## Building
 

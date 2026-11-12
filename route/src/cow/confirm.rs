@@ -1,9 +1,14 @@
 //! The confirm write: build the EIP-712 order from a stored draft, obtain
 //! the owner's signature through the Bloom signing host, and post the order
-//! to the orderbook. Idempotent: re-confirming a posted order is a no-op, an
-//! ambiguous post is reconciled by the locally computed order UID, and a
-//! pending owner approval is recorded so the exact same write can be retried
-//! after approval.
+//! to the orderbook. Idempotent: re-confirming a posted order is a no-op, and
+//! a pending owner approval is recorded so the exact same write can be
+//! retried after approval.
+//!
+//! The order's UID is fixed by the order, so it is known before anything is
+//! posted. The draft is saved as `ambiguous` before the POST, and the next
+//! confirm looks that UID up in the orderbook. A lost response, a failed
+//! store write or a stopped Machine therefore cannot leave a live order the
+//! draft does not know about.
 //!
 //! The signing request carries the order's full EIP-712 typed data as a
 //! [`petal::MessageReview`] envelope ([`order::message_review`]). Bloom
@@ -57,8 +62,15 @@ pub fn confirm_draft(
     {
         return petal::error(-4, "draft identity mismatch");
     }
-    // Idempotent re-confirm of an already-posted order.
-    if stored.status == DraftStatus::Posted && stored.uid.is_some() {
+    // Idempotent re-confirm of an already-posted order. An earlier write may
+    // have recorded the post without the UID, so fill it in.
+    if stored.status == DraftStatus::Posted {
+        if stored.uid.is_none()
+            && let Ok(uid) = stored.expected_uid(network)
+        {
+            stored.uid = Some(uid);
+            let _ = draft::save_draft(&key, &stored);
+        }
         return DispatchResponse::Write;
     }
     stored.attempts += 1;
@@ -67,12 +79,7 @@ pub fn confirm_draft(
     // earlier POST landed.
     if stored.status == DraftStatus::Ambiguous {
         match reconcile(&stored, network) {
-            Reconciled::Posted => {
-                stored.status = DraftStatus::Posted;
-                stored.last_error = None;
-                let _ = draft::save_draft(&key, &stored);
-                return DispatchResponse::Write;
-            }
+            Reconciled::Posted(uid) => return settle_posted(&key, &mut stored, uid),
             // The orderbook has no order with this UID, so sign and post the
             // same order again. That cannot create a second order: the UID
             // is fixed by the order, and the orderbook refuses a duplicate.
@@ -106,11 +113,26 @@ pub fn confirm_draft(
         Err(e) => return petal::error(-4, format!("stored order is invalid: {e}")),
     };
     // Freshness: do not sign an order about to lapse.
-    let now_seconds = match petal::sdk::try_now_ms() {
-        Ok(ms) => ms / 1000,
+    let now_ms = match petal::sdk::try_now_ms() {
+        Ok(ms) => ms,
         Err(e) => return petal::error(-4, format!("read clock: {}", petal::sdk::describe_error(&e))),
     };
-    if now_seconds + MIN_REMAINING_VALIDITY_SECONDS > u64::from(gpv2.validTo) {
+    if now_ms / 1000 + MIN_REMAINING_VALIDITY_SECONDS > u64::from(gpv2.validTo) {
+        // An earlier confirm may have posted this order without the draft
+        // recording it. Look before telling the agent to trade again.
+        if stored.attempts > 1 {
+            match reconcile(&stored, network) {
+                Reconciled::Posted(uid) => return settle_posted(&key, &mut stored, uid),
+                Reconciled::NotPosted => {}
+                Reconciled::StillUnknown => {
+                    return petal::error(
+                        -4,
+                        "quote has expired, and the orderbook could not be checked for an earlier post of this order; retry this confirm before creating a new draft",
+                    );
+                }
+                Reconciled::Failed(resp) => return resp,
+            }
+        }
         return petal::error(-3, "quote has expired; create a new draft for a fresh quote");
     }
     let review = match order::message_review(&gpv2, network) {
@@ -141,26 +163,46 @@ pub fn confirm_draft(
     request.action = Some(review.into_bytes());
     match petal::sdk::sign_payload(&request) {
         Ok(SignOutcome::Signature(raw)) => {
-            let _ = draft::save_draft(&key, &stored);
-            post_signed_order(&key, &mut stored, network, &gpv2, owner, &raw)
-        }
-        Ok(SignOutcome::ApprovalPending { action_id, expires_ms }) => {
-            stored.status = DraftStatus::SigningPending;
-            stored.approval = Some(ApprovalState { action_id, expires_ms });
+            // Record that a post is about to happen before making it. If the
+            // response is lost, the store write after it fails or Machine
+            // stops, the next confirm finds an `ambiguous` draft and looks
+            // the order up, instead of a draft that looks unposted.
+            stored.status = DraftStatus::Ambiguous;
+            stored.approval = None;
+            stored.last_error = Some("order signed; its post was not recorded".into());
             if let Err(resp) = draft::save_draft(&key, &stored) {
                 return resp;
             }
-            petal::error(
-                -3,
-                "owner approval required for this order; approve it in Bloom, then retry this exact confirm write",
-            )
+            post_signed_order(&key, &mut stored, network, &gpv2, owner, &raw)
         }
-        Err(SdkError::Host(HostStatus::Denied)) => {
-            // Bloom withholds why it denied a signature, so this keeps it
-            // out of the readable draft too.
-            stored.last_error = Some("signing was denied".into());
+        Ok(SignOutcome::ApprovalPending { action_id, expires_ms }) => {
+            let message = format!(
+                "owner approval required for this order (request {action_id}); approve it in Bloom, then retry this exact confirm write"
+            );
+            stored.status = DraftStatus::SigningPending;
+            stored.approval = Some(ApprovalState { action_id, expires_ms });
+            stored.last_error = None;
+            if let Err(resp) = draft::save_draft(&key, &stored) {
+                return resp;
+            }
+            petal::error(-3, message)
+        }
+        Err(e @ SdkError::Host(HostStatus::Denied)) => {
+            // Read the host's reason before saving the draft replaces it. It
+            // is returned with -3: Bloom drops the message of a -2, and the
+            // agent needs to know whether to wait, retry or start again.
+            let reason = petal::sdk::describe_error(&e);
+            let lapsed = stored.status == DraftStatus::ApprovalLapsed;
+            let denied = denied(stored.approval.as_ref(), lapsed, now_ms, &reason);
+            if let Some(status) = denied.status {
+                stored.status = status;
+            }
+            if denied.clear_approval {
+                stored.approval = None;
+            }
+            stored.last_error = Some(denied.message.clone());
             let _ = draft::save_draft(&key, &stored);
-            petal::error(-2, "signing was denied")
+            petal::error(-3, denied.message)
         }
         Err(e) => {
             // Read the host's reason before saving the draft replaces it.
@@ -170,6 +212,66 @@ pub fn confirm_draft(
             petal::error(-4, message)
         }
     }
+}
+
+/// What a denied signature means for the draft, and what to tell the agent.
+#[derive(Debug, PartialEq, Eq)]
+struct Denied {
+    /// The status to move the draft to, when the denial changes it.
+    status: Option<DraftStatus>,
+    clear_approval: bool,
+    message: String,
+}
+
+/// Bloom denies a signature for several reasons, and the right next step
+/// differs. While a recorded approval is still inside its window, the owner
+/// most likely has not approved yet, so the draft stays pending. Once the
+/// window has passed, the approval expired or was declined: the draft is
+/// marked lapsed and the agent is told to start again, and it is told so
+/// again on any later attempt (`lapsed`). `reason` is the host's own
+/// explanation.
+fn denied(approval: Option<&ApprovalState>, lapsed: bool, now_ms: u64, reason: &str) -> Denied {
+    match approval {
+        Some(approval) if now_ms < approval.expires_ms => Denied {
+            status: None,
+            clear_approval: false,
+            message: format!(
+                "Bloom has not signed this order ({reason}). If the owner has not approved request {} yet, approve it in Bloom, then retry this exact confirm write",
+                approval.action_id
+            ),
+        },
+        Some(_) => Denied {
+            status: Some(DraftStatus::ApprovalLapsed),
+            clear_approval: true,
+            message: format!(
+                "Bloom refused to sign this order ({reason}). Its owner approval expired or was declined; create a new draft"
+            ),
+        },
+        None if lapsed => Denied {
+            status: None,
+            clear_approval: false,
+            message: format!(
+                "Bloom refused to sign this order ({reason}). Its owner approval already expired or was declined; create a new draft"
+            ),
+        },
+        None => Denied {
+            status: None,
+            clear_approval: false,
+            message: format!("Bloom refused to sign this order ({reason})"),
+        },
+    }
+}
+
+/// Record that the orderbook holds this draft's order.
+fn settle_posted(key: &str, stored: &mut OrderDraft, uid: String) -> DispatchResponse {
+    stored.status = DraftStatus::Posted;
+    stored.uid = Some(uid);
+    stored.approval = None;
+    stored.last_error = None;
+    // If this write fails the draft stays `ambiguous`, and the next confirm
+    // or status read finds the order by its UID again.
+    let _ = draft::save_draft(key, stored);
+    DispatchResponse::Write
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -194,7 +296,8 @@ fn claim_effects(draft: &OrderDraft, network: CowNetwork) -> petal::ClaimEffects
 }
 
 enum Reconciled {
-    Posted,
+    /// The orderbook holds the order under this UID.
+    Posted(String),
     NotPosted,
     StillUnknown,
     Failed(DispatchResponse),
@@ -202,17 +305,12 @@ enum Reconciled {
 
 /// Look the locally computed order UID up in the orderbook.
 fn reconcile(draft: &OrderDraft, network: CowNetwork) -> Reconciled {
-    let gpv2 = match draft.order.to_gpv2() {
-        Ok(order) => order,
+    let uid = match draft.expected_uid(network) {
+        Ok(uid) => uid,
         Err(_) => return Reconciled::StillUnknown,
     };
-    let owner = match draft.owner.parse::<Address>() {
-        Ok(address) => address,
-        Err(_) => return Reconciled::StillUnknown,
-    };
-    let uid = order::order_uid(&gpv2, owner, network);
-    match http::get_order(network, &format!("0x{}", hex::encode(uid))) {
-        Ok(Some(found)) if found.get("uid").is_some() => Reconciled::Posted,
+    match http::get_order(network, &uid) {
+        Ok(Some(found)) if found.get("uid").is_some() => Reconciled::Posted(uid),
         Ok(Some(_)) => Reconciled::StillUnknown,
         Ok(None) => Reconciled::NotPosted,
         Err(DispatchResponse::Error { code: -4, .. }) => Reconciled::StillUnknown,
@@ -261,21 +359,19 @@ fn post_signed_order(
     let expected_uid = format!("0x{}", hex::encode(order::order_uid(gpv2, owner, network)));
     match http::post_order(network, &body) {
         Ok(http::OrderPost::Created(response)) => {
-            let returned_uid = response.as_str().map(str::to_string);
-            let uid = match returned_uid {
-                Some(uid) if uid == expected_uid => uid,
-                Some(uid) => {
-                    // The API is authoritative for the UID it accepted.
-                    uid
-                }
-                None => expected_uid,
-            };
+            let (uid, note) = accepted_uid(response.as_str(), &expected_uid);
             stored.status = DraftStatus::Posted;
-            stored.uid = Some(uid);
+            stored.uid = Some(uid.clone());
             stored.approval = None;
-            stored.last_error = None;
+            stored.last_error = note;
             match draft::save_draft(key, stored) {
                 Ok(()) => DispatchResponse::Write,
+                // The order is live. The draft stays `ambiguous`, which the
+                // next confirm settles by looking the UID up.
+                Err(DispatchResponse::Error { message, .. }) => petal::error(
+                    -4,
+                    format!("order {uid} was posted, but the draft could not be updated ({message}); retry this confirm to record it"),
+                ),
                 Err(resp) => resp,
             }
         }
@@ -295,6 +391,10 @@ fn post_signed_order(
                 }
             }
             Refusal::RetryLater => {
+                // The orderbook did not create the order, so nothing is
+                // ambiguous: the draft awaits another confirm, which signs
+                // and posts again.
+                stored.status = DraftStatus::Quoted;
                 stored.last_error = Some(message.clone());
                 let _ = draft::save_draft(key, stored);
                 petal::error(-4, format!("the orderbook is rate limiting; retry this confirm: {message}"))
@@ -315,6 +415,23 @@ fn post_signed_order(
             petal::error(-4, format!("order POST outcome unknown after signing: {message}"))
         }
         Err(resp) => resp,
+    }
+}
+
+/// The UID to record for a created order, and a note when the orderbook's
+/// answer was not the UID this Petal computed. The orderbook is
+/// authoritative for the order it accepted, so its UID is kept when it is a
+/// well-formed one; the difference is recorded so it is not silent.
+fn accepted_uid(returned: Option<&str>, expected: &str) -> (String, Option<String>) {
+    match returned {
+        Some(uid) if uid.eq_ignore_ascii_case(expected) => (expected.to_string(), None),
+        Some(uid) if params::parse_order_uid(uid).is_ok() => (
+            uid.to_ascii_lowercase(),
+            Some(format!(
+                "the orderbook returned order uid {uid}, but this order's computed uid is {expected}"
+            )),
+        ),
+        _ => (expected.to_string(), None),
     }
 }
 
@@ -554,5 +671,69 @@ mod tests {
                 std::task::Poll::Pending => std::thread::yield_now(),
             }
         }
+    }
+
+    fn approval(expires_ms: u64) -> ApprovalState {
+        ApprovalState {
+            action_id: "act-123".into(),
+            expires_ms,
+        }
+    }
+
+    #[test]
+    fn a_denial_inside_the_approval_window_keeps_the_draft_pending() {
+        let outcome = denied(Some(&approval(2_000)), false, 1_999, "denied: approval is not active");
+        assert_eq!(outcome.status, None);
+        assert!(!outcome.clear_approval);
+        // The agent learns the reason and which request to approve.
+        assert!(outcome.message.contains("approval is not active"), "{}", outcome.message);
+        assert!(outcome.message.contains("act-123"), "{}", outcome.message);
+        assert!(outcome.message.contains("retry"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn a_denial_after_the_approval_window_marks_the_draft_lapsed() {
+        for now_ms in [2_000, 2_001, u64::MAX] {
+            let outcome = denied(Some(&approval(2_000)), false, now_ms, "denied");
+            assert_eq!(outcome.status, Some(DraftStatus::ApprovalLapsed));
+            assert!(outcome.clear_approval);
+            assert!(outcome.message.contains("create a new draft"), "{}", outcome.message);
+        }
+    }
+
+    #[test]
+    fn a_denial_with_no_recorded_approval_reports_the_reason_only() {
+        let outcome = denied(None, false, 5, "denied: CEREMONY_RATE_LIMITED retry after 900 ms");
+        assert_eq!(outcome.status, None);
+        assert!(!outcome.clear_approval);
+        assert!(outcome.message.contains("CEREMONY_RATE_LIMITED"), "{}", outcome.message);
+        // Nothing here says the draft is dead: a rate limit is temporary.
+        assert!(!outcome.message.contains("new draft"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn a_draft_whose_approval_lapsed_keeps_saying_so_when_denied_again() {
+        let outcome = denied(None, true, 5, "denied");
+        assert_eq!(outcome.status, None);
+        assert!(outcome.message.contains("create a new draft"), "{}", outcome.message);
+    }
+
+    #[test]
+    fn the_recorded_uid_is_the_computed_one_unless_the_orderbook_returns_another() {
+        let expected = format!("0x{}", "ab".repeat(56));
+        let other = format!("0x{}", "CD".repeat(56));
+        // The usual answer, in any letter case, records the computed UID.
+        assert_eq!(accepted_uid(Some(&expected), &expected), (expected.clone(), None));
+        assert_eq!(
+            accepted_uid(Some(&expected.to_ascii_uppercase().replace("0X", "0x")), &expected),
+            (expected.clone(), None)
+        );
+        // A different well-formed UID is kept, and the difference is noted.
+        let (uid, note) = accepted_uid(Some(&other), &expected);
+        assert_eq!(uid, other.to_ascii_lowercase());
+        assert!(note.unwrap().contains(&expected));
+        // A missing or malformed answer falls back to the computed UID.
+        assert_eq!(accepted_uid(None, &expected), (expected.clone(), None));
+        assert_eq!(accepted_uid(Some("not-a-uid"), &expected), (expected.clone(), None));
     }
 }
