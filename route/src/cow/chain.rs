@@ -47,13 +47,19 @@ pub fn verify_chain_route(network: CowNetwork) -> Result<(), DispatchResponse> {
     Ok(())
 }
 
-fn eth_call(network: CowNetwork, to: Address, data: Vec<u8>, what: &str) -> Result<Vec<u8>, DispatchResponse> {
-    let params = serde_json::json!([
-        format!("{to:#x}"),
-        format!("0x{}", hex::encode(&data)),
+/// The `eth_call` parameters Bloom's chain host takes: the standard JSON-RPC
+/// call object, then the block. Bloom reads the latest block only, and refuses
+/// any other shape as `invalid eth_call parameters`.
+fn eth_call_params(to: Address, data: &[u8]) -> String {
+    serde_json::json!([
+        { "to": format!("{to:#x}"), "data": format!("0x{}", hex::encode(data)) },
         "latest"
     ])
-    .to_string();
+    .to_string()
+}
+
+fn eth_call(network: CowNetwork, to: Address, data: Vec<u8>, what: &str) -> Result<Vec<u8>, DispatchResponse> {
+    let params = eth_call_params(to, &data);
     let result = petal::sdk::chain_read(network.bloom_chain(), "eth_call", &params)
         .map_err(|e| petal::error(-4, format!("{what}: {}", petal::sdk::describe_error(&e))))?;
     let result: String = serde_json::from_str(&result)
@@ -107,6 +113,21 @@ mod tests {
         assert_eq!(call.len(), 4 + 32);
         assert_eq!(&call[4..16], &[0u8; 12]);
         assert_eq!(&call[16..36], owner.as_slice());
+    }
+
+    #[test]
+    fn eth_call_params_are_a_call_object_and_the_latest_block() {
+        let token = "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238".parse::<Address>().unwrap();
+        let params: serde_json::Value =
+            serde_json::from_str(&eth_call_params(token, &[0x70, 0xa0, 0x82, 0x31])).unwrap();
+        // Bloom takes one or two parameters and reads the first as an object.
+        assert_eq!(
+            params,
+            serde_json::json!([
+                { "to": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238", "data": "0x70a08231" },
+                "latest"
+            ])
+        );
     }
 
     #[test]
